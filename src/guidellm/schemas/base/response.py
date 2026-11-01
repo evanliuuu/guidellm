@@ -9,6 +9,7 @@ implementations.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from pydantic import Field
@@ -22,8 +23,11 @@ from guidellm.schemas.base.request import GenerationRequest, UsageMetrics
 from guidellm.schemas.base.request_stats import GenerativeRequestStats
 from guidellm.schemas.base.tool_call import ToolCall, ToolCallFunction
 
+OutputTokenizerFactory = Callable[[], "PreTrainedTokenizerBase"]
+
 __all__ = [
     "GenerationResponse",
+    "OutputTokenizerFactory",
     "ToolCall",
     "ToolCallFunction",
 ]
@@ -98,7 +102,7 @@ class GenerationResponse(StandardBaseModel):
         request: GenerationRequest,
         info: RequestInfo,
         prefer_response: bool = True,
-        tokenizer: PreTrainedTokenizerBase | None = None,
+        tokenizer_factory: OutputTokenizerFactory | None = None,
     ) -> GenerativeRequestStats:
         """
         Compile and return comprehensive request statistics.
@@ -107,17 +111,17 @@ class GenerationResponse(StandardBaseModel):
         statistical record, with preference given to response-level metrics when
         available to ensure accuracy of actual execution data.
 
-        When the response did not report an output token count, ``tokenizer``
-        counts tokens in the response text. That count replaces the request
-        target, which is the length the client asked for rather than the text
-        that came back.
+        When the response did not report an output token count,
+        ``tokenizer_factory`` counts tokens in the response text. That count
+        replaces the request target, which is the length the client asked for.
 
         :param request: The original generation request containing input data
         :param info: Metadata and timing information for the request execution
         :param prefer_response: Whether to prefer response metrics over request
             metrics when both are available
-        :param tokenizer: Tokenizer for the response text when the response has
-            no output token count. When omitted, the request target is kept.
+        :param tokenizer_factory: Factory for the tokenizer that counts response
+            text when the response has no output token count. When omitted, the
+            request target is kept.
         :return: A GenerativeRequestStats object containing detailed statistics
         :raises ValueError: When request IDs don't match between objects
         """
@@ -156,7 +160,7 @@ class GenerationResponse(StandardBaseModel):
                 output_metrics_dict[key] = value
 
         self._apply_counted_output_tokens(
-            output_metrics_dict, info, prefer_response, tokenizer
+            output_metrics_dict, info, prefer_response, tokenizer_factory
         )
 
         # If tool calls were expected but none were recorded (either because
@@ -186,27 +190,29 @@ class GenerationResponse(StandardBaseModel):
         output_metrics: dict[str, Any],
         info: RequestInfo,
         prefer_response: bool,
-        tokenizer: PreTrainedTokenizerBase | None,
+        tokenizer_factory: OutputTokenizerFactory | None,
     ) -> None:
         """
         Replace a missing output token count with a count of the response text.
 
-        The request target is the length the client asked for. It is kept when
-        response metrics are not preferred, the request did not complete, usage
-        already reported a count, or no tokenizer or response text is available.
+        The factory is called only when response metrics are preferred, the
+        request completed, usage did not report an output token count, and the
+        response has text.
 
         :param output_metrics: Merged output metrics to update in place
         :param info: Request execution information
         :param prefer_response: Whether response metrics are preferred
-        :param tokenizer: Tokenizer for the response text
+        :param tokenizer_factory: Factory for the tokenizer, or None
         """
         text = self.text
         if (
-            tokenizer is None
+            tokenizer_factory is None
             or text is None
             or not prefer_response
             or info.status != "completed"
             or self.output_metrics.text_tokens is not None
         ):
             return
-        output_metrics["text_tokens"] = len(tokenizer.encode(text))
+        output_metrics["text_tokens"] = len(
+            tokenizer_factory().encode(text, add_special_tokens=False)
+        )

@@ -13,6 +13,7 @@ from guidellm.schemas import (
     RequestTimings,
     UsageMetrics,
 )
+from guidellm.schemas.base.response import OutputTokenizerFactory
 
 
 def _make_stats(
@@ -232,12 +233,18 @@ class TestGetWithinRange:
 class _WordTokenizer:
     """Counts whitespace-separated words."""
 
-    def encode(self, text: str) -> list[int]:
-        return list(range(len(text.split())))
+    def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
+        tokens = list(range(len(text.split())))
+        if add_special_tokens:
+            return [-1, *tokens]
+        return tokens
 
 
-def _benchmark_accumulator() -> GenerativeBenchmarkAccumulator:
+def _benchmark_accumulator(
+    factory: OutputTokenizerFactory | None = None,
+) -> GenerativeBenchmarkAccumulator:
     return GenerativeBenchmarkAccumulator(
+        output_tokenizer_factory=factory,
         config=BenchmarkConfig(
             run_id="missing-usage",
             run_index=0,
@@ -247,7 +254,7 @@ def _benchmark_accumulator() -> GenerativeBenchmarkAccumulator:
             requests={},
             backend={},
             environment={},
-        )
+        ),
     )
 
 
@@ -290,8 +297,7 @@ class TestMissingUsageOutputTokens:
             loads.append(1)
             return _WordTokenizer()
 
-        accumulator = _benchmark_accumulator()
-        accumulator.set_output_tokenizer_factory(factory)
+        accumulator = _benchmark_accumulator(factory)
         request = GenerationRequest(
             request_id="req-1",
             input_metrics=UsageMetrics(text_tokens=20),

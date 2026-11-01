@@ -261,6 +261,7 @@ async def test_profile_uses_one_benchmark_lifecycle_and_normal_report(
         spec={
             "backend": {"kind": "openai_http", "target": "http://localhost:8000"},
             "data": [{"kind": "synthetic_text", "prompt_tokens": 8}],
+            "tokenizer": {"kind": "huggingface_auto", "model": "stub"},
             "profile": profile_args,
             "constraints": [{"kind": "max_duration", "seconds": 5}],
             "outputs": [{"kind": "json", "path": str(output_path)}],

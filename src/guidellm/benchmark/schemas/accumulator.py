@@ -15,12 +15,9 @@ from __future__ import annotations
 import random
 import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Literal
 
-from pydantic import Field, PrivateAttr
-
-if TYPE_CHECKING:
-    from transformers import PreTrainedTokenizerBase
+from pydantic import Field
 
 from guidellm.benchmark.schemas.base import BenchmarkAccumulator, BenchmarkConfig
 from guidellm.scheduler import SchedulerState
@@ -33,6 +30,7 @@ from guidellm.schemas import (
     StandardBaseModel,
     StatusBreakdown,
 )
+from guidellm.schemas.base.response import OutputTokenizerFactory
 
 __all__ = [
     "GenerativeBenchmarkAccumulator",
@@ -688,7 +686,7 @@ class GenerativeRequestsAccumulator(StandardBaseModel):
         request: GenerationRequest,
         info: RequestInfo,
         prefer_response_metrics: bool,
-        tokenizer: PreTrainedTokenizerBase | None = None,
+        tokenizer_factory: OutputTokenizerFactory | None = None,
     ) -> GenerativeRequestStats:
         """
         Record request statistics and apply reservoir sampling if configured.
@@ -701,11 +699,16 @@ class GenerativeRequestsAccumulator(StandardBaseModel):
         :param request: Original generation request with input data
         :param info: Request execution information and timing
         :param prefer_response_metrics: Whether to prefer metrics from response
-        :param tokenizer: Tokenizer used when the response omitted output tokens
+        :param tokenizer_factory: Factory for counting output tokens when usage
+            omitted them
         :return: Compiled request statistics
         """
         stats = self.compile_stats(
-            response, request, info, prefer_response_metrics, tokenizer
+            response,
+            request,
+            info,
+            prefer_response_metrics,
+            tokenizer_factory,
         )
 
         current_index = len(self.requests_stats)
@@ -758,7 +761,7 @@ class GenerativeRequestsAccumulator(StandardBaseModel):
         request: GenerationRequest,
         info: RequestInfo,
         prefer_response_metrics: bool,
-        tokenizer: PreTrainedTokenizerBase | None = None,
+        tokenizer_factory: OutputTokenizerFactory | None = None,
     ) -> GenerativeRequestStats:
         """
         Compile statistics from request, response, and execution info.
@@ -767,7 +770,8 @@ class GenerativeRequestsAccumulator(StandardBaseModel):
         :param request: Original generation request with input data
         :param info: Request execution information and timing
         :param prefer_response_metrics: Whether to prefer metrics from response
-        :param tokenizer: Tokenizer used when the response omitted output tokens
+        :param tokenizer_factory: Factory for counting output tokens when usage
+            omitted them
         :return: Compiled generative request statistics
         """
         # Extract the first request for arguments if multi-turn
@@ -791,7 +795,7 @@ class GenerativeRequestsAccumulator(StandardBaseModel):
             request=first_request,
             info=info,
             prefer_response=prefer_response_metrics,
-            tokenizer=tokenizer,
+            tokenizer_factory=tokenizer_factory,
         )
 
 
@@ -848,47 +852,6 @@ class GenerativeBenchmarkAccumulator(
         default_factory=GenerativeMetricsAccumulator,
         description="Running metrics for incomplete requests",
     )
-    _output_tokenizer_factory: Callable[[], Any] | None = PrivateAttr(default=None)
-    _output_tokenizer: Any | None = PrivateAttr(default=None)
-
-    def set_output_tokenizer_factory(
-        self, factory: Callable[[], PreTrainedTokenizerBase] | None
-    ) -> None:
-        """
-        Provide the benchmark tokenizer used when a response omits usage.
-
-        The factory is called at most once, and only for a completed response
-        whose output token count was not reported.
-
-        :param factory: Callable returning the configured tokenizer, or None
-        """
-        self._output_tokenizer_factory = factory
-        self._output_tokenizer = None
-
-    def _tokenizer_for_missing_output_usage(
-        self,
-        response: GenerationResponse | None,
-        info: RequestInfo,
-    ) -> PreTrainedTokenizerBase | None:
-        """
-        Return the tokenizer when output tokens must be counted from text.
-
-        :param response: Generation response, or None when the request produced none
-        :param info: Request execution information
-        :return: Cached tokenizer, or None when counting is not needed
-        """
-        if (
-            self._output_tokenizer_factory is None
-            or response is None
-            or not self.config.prefer_response_metrics
-            or info.status != "completed"
-            or response.output_metrics.text_tokens is not None
-            or response.text is None
-        ):
-            return None
-        if self._output_tokenizer is None:
-            self._output_tokenizer = self._output_tokenizer_factory()
-        return self._output_tokenizer
 
     def model_post_init(self, __context):
         """
@@ -956,7 +919,7 @@ class GenerativeBenchmarkAccumulator(
             request,
             info,
             self.config.prefer_response_metrics,
-            self._tokenizer_for_missing_output_usage(response, info),
+            self._output_tokenizer_factory,
         )
         metrics_accumulator.update_estimate(stats, duration)
         self.total_metrics.update_estimate(stats, duration)

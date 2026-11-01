@@ -125,7 +125,6 @@ async def create_data_loader(
         preprocessors=preprocessors,
         finalizer=finalizer,
         random_seed=rng.getrandbits(32),
-        tokenizer_factory=tokenizer_factory,
     )
 
     if console_step:

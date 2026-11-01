@@ -493,9 +493,12 @@ class _WordTokenizer:
     def __init__(self) -> None:
         self.texts: list[str] = []
 
-    def encode(self, text: str) -> list[int]:
+    def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
         self.texts.append(text)
-        return list(range(len(text.split())))
+        tokens = list(range(len(text.split())))
+        if add_special_tokens:
+            return [-1, *tokens]
+        return tokens
 
 
 def _early_stop_stream() -> tuple[GenerationRequest, GenerationResponse, RequestInfo]:
@@ -569,7 +572,9 @@ class TestCompileStatsMissingUsage:
         request, response, info = _early_stop_stream()
         tokenizer = _WordTokenizer()
 
-        stats = response.compile_stats(request, info, tokenizer=tokenizer)
+        stats = response.compile_stats(
+            request, info, tokenizer_factory=lambda: tokenizer
+        )
 
         assert tokenizer.texts == [response.text]
         assert stats.output_metrics.text_tokens == 10
@@ -590,7 +595,9 @@ class TestCompileStatsMissingUsage:
         response.output_metrics.text_tokens = 7
         tokenizer = _WordTokenizer()
 
-        stats = response.compile_stats(request, info, tokenizer=tokenizer)
+        stats = response.compile_stats(
+            request, info, tokenizer_factory=lambda: tokenizer
+        )
 
         assert tokenizer.texts == []
         assert stats.output_metrics.text_tokens == 7
@@ -607,8 +614,26 @@ class TestCompileStatsMissingUsage:
         tokenizer = _WordTokenizer()
 
         stats = response.compile_stats(
-            request, info, prefer_response=False, tokenizer=tokenizer
+            request, info, prefer_response=False, tokenizer_factory=lambda: tokenizer
         )
 
         assert tokenizer.texts == []
         assert stats.output_metrics.text_tokens == 30
+
+    @pytest.mark.regression
+    def test_counted_tokens_omit_special_tokens(self):
+        """
+        A tokenizer that prepends BOS does not inflate the early-stop count.
+
+        ## WRITTEN BY AI ##
+        """
+        request, response, info = _early_stop_stream()
+        tokenizer = _WordTokenizer()
+
+        stats = response.compile_stats(
+            request, info, tokenizer_factory=lambda: tokenizer
+        )
+
+        assert response.text is not None
+        assert len(tokenizer.encode(response.text)) == 11
+        assert stats.output_metrics.text_tokens == 10

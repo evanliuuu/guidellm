@@ -16,7 +16,7 @@ import uuid
 from abc import ABC, abstractmethod
 from typing import Any, Generic, TypeVar
 
-from pydantic import Field
+from pydantic import Field, PrivateAttr
 
 from guidellm.scheduler import (
     RequestT,
@@ -29,6 +29,7 @@ from guidellm.schemas import (
     StandardBaseDict,
     StatusDistributionSummary,
 )
+from guidellm.schemas.base.response import OutputTokenizerFactory
 from guidellm.schemas.benchmark.goodput import GoodputSLO
 from guidellm.schemas.benchmark.transient import TransientPhaseConfig
 from guidellm.schemas.benchmark.warnings import (
@@ -146,6 +147,22 @@ class BenchmarkAccumulator(StandardBaseDict, ABC, Generic[RequestT, ResponseT]):
     config: BenchmarkConfig = Field(
         description="Benchmark execution configuration and constraints",
     )
+    _output_tokenizer_factory: OutputTokenizerFactory | None = PrivateAttr(default=None)
+
+    def __init__(
+        self,
+        output_tokenizer_factory: OutputTokenizerFactory | None = None,
+        **data: Any,
+    ) -> None:
+        """
+        Build the accumulator and keep the tokenizer factory off serialized state.
+
+        :param output_tokenizer_factory: Factory for counting output tokens when
+            a response omits usage
+        :param data: Accumulator fields, including ``config``
+        """
+        super().__init__(**data)
+        self._output_tokenizer_factory = output_tokenizer_factory
 
     @abstractmethod
     def update_estimate(

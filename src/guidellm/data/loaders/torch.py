@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Callable, Iterator
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar, runtime_checkable
-
-if TYPE_CHECKING:
-    from transformers import PreTrainedTokenizerBase
+from collections.abc import Iterator
+from typing import Any, Protocol, TypeVar, runtime_checkable
 
 import torch
 from torch.utils.data.dataloader import DataLoader as PyTorchDataLoader
@@ -179,10 +176,8 @@ class TorchDataLoader(PyTorchDataLoader[DataT], InfoMixin, DataLoader[DataT]):
         preprocessors: list[DatasetPreprocessor | DataDependentPreprocessor],
         finalizer: DatasetFinalizer[DataT],
         random_seed: int = 42,
-        tokenizer_factory: Callable[[], PreTrainedTokenizerBase] | None = None,
         **kwargs: Any,
     ):
-        self.tokenizer_factory = tokenizer_factory
         self._samples = config.samples
         iterator: DatasetsIterator[DataT] = DatasetsIterator(
             datasets=datasets,

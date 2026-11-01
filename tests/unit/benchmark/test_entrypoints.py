@@ -280,6 +280,7 @@ async def test_entrypoint_passes_configured_objectives_to_benchmarker():
                 "data": [
                     {"kind": "synthetic_text", "prompt_tokens": 8, "output_tokens": 8}
                 ],
+                "tokenizer": {"kind": "huggingface_auto", "model": "stub"},
                 "profile": {"kind": "synchronous"},
                 "metrics": {"kind": "generative", "slo": slo.model_dump()},
                 "outputs": [],
