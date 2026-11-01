@@ -12,8 +12,7 @@ from guidellm.data.preprocessors import (
     PreprocessorRegistry,
 )
 from guidellm.data.schemas import DatasetType
-from guidellm.data.tokenizers import TokenizerRegistry
-from guidellm.schemas.base.response import OutputTokenizerFactory
+from guidellm.data.tokenizers import DataTokenizer, TokenizerRegistry
 from guidellm.schemas.data import (
     DataArgs,
     DataFinalizerArgs,
@@ -35,7 +34,7 @@ async def create_data_loader(
     finalizer_config: DataFinalizerArgs,
     random_seed: int = 42,
     console: Console | None = None,
-    tokenizer_factory: OutputTokenizerFactory | None = None,
+    tokenizer_factory: DataTokenizer | None = None,
 ) -> DataLoader:
     """
     Factory function to create a DataLoader instance based on provided configurations.

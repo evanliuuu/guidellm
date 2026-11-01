@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import uuid
 from abc import ABC
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Generic
 
 from guidellm.benchmark.profiles import Profile
@@ -61,7 +61,7 @@ class Benchmarker(
 
     async def run(  # noqa: C901, PLR0912
         self,
-        accumulator_class: type[BenchmarkAccumulatorT],
+        accumulator_class: Callable[[BenchmarkConfig], BenchmarkAccumulatorT],
         benchmark_class: type[BenchmarkT],
         requests: DatasetIterT[RequestT],
         backend: BackendInterface[RequestT, ResponseT],
@@ -82,7 +82,8 @@ class Benchmarker(
         """
         Execute benchmark runs across scheduling strategies in the profile.
 
-        :param accumulator_class: Class for accumulating metrics during execution
+        :param accumulator_class: Callable that builds an accumulator from its config.
+            Invoked with that config as its only argument.
         :param benchmark_class: Class for constructing final benchmark results
         :param requests: Request datasets to process across strategies
         :param backend: Backend interface for executing requests
@@ -149,7 +150,7 @@ class Benchmarker(
                     backend=InfoMixin.extract_from_obj(backend),
                     environment=InfoMixin.extract_from_obj(environment),
                 )
-                accumulator = accumulator_class(config=config)
+                accumulator = accumulator_class(config)
                 scheduler_state = None
                 scheduler: Scheduler[RequestT, ResponseT] = Scheduler()
 

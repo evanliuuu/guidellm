@@ -15,7 +15,7 @@ from __future__ import annotations
 import random
 import time
 from collections.abc import Callable
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import Field, PrivateAttr
 
@@ -856,17 +856,18 @@ class GenerativeBenchmarkAccumulator(
 
     def __init__(
         self,
+        config: BenchmarkConfig,
+        *,
         output_tokenizer_factory: OutputTokenizerFactory | None = None,
-        **data: Any,
     ) -> None:
         """
         Build the accumulator and keep the tokenizer factory off serialized state.
 
+        :param config: Benchmark execution configuration
         :param output_tokenizer_factory: Factory for counting output tokens when
             a response omits usage
-        :param data: Accumulator fields, including ``config``
         """
-        super().__init__(**data)
+        super().__init__(config=config)
         self._output_tokenizer_factory = output_tokenizer_factory
 
     def model_post_init(self, __context):

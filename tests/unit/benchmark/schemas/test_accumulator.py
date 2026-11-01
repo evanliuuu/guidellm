@@ -336,3 +336,23 @@ class TestMissingUsageOutputTokens:
 
         assert loads == [1]
         assert accumulator.completed.requests_stats[1].output_metrics.text_tokens == 7
+
+    @pytest.mark.regression
+    def test_tokenizer_factory_absent_from_model_dump(self):
+        """
+        The tokenizer factory is not part of the serialized accumulator.
+
+        ## WRITTEN BY AI ##
+        """
+
+        def factory() -> _WordTokenizer:
+            return _WordTokenizer()
+
+        accumulator = _benchmark_accumulator(factory)
+        dumped = accumulator.model_dump()
+        dumped_json = accumulator.model_dump(mode="json")
+
+        assert "output_tokenizer_factory" not in dumped
+        assert "_output_tokenizer_factory" not in dumped
+        assert "output_tokenizer_factory" not in dumped_json
+        assert "_output_tokenizer_factory" not in dumped_json

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Iterable
+from functools import partial
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -30,7 +31,6 @@ from guidellm.benchmark.progress import (
     GenerativeLoggingBenchmarkerProgress,
 )
 from guidellm.benchmark.schemas import (
-    BenchmarkConfig,
     GenerativeBenchmark,
     GenerativeBenchmarkAccumulator,
     GenerativeBenchmarksReport,
@@ -611,21 +611,15 @@ async def benchmark_generative_text(  # noqa: C901
         collectors=benchmark_args.collectors, console=console
     )
 
-    class _GenerativeAccumulator(GenerativeBenchmarkAccumulator):
-        """Generative accumulator bound to this run's tokenizer factory."""
-
-        def __init__(self, config: BenchmarkConfig) -> None:
-            super().__init__(
-                output_tokenizer_factory=output_tokenizer_factory,
-                config=config,
-            )
-
     benchmarker: Benchmarker[
         GenerativeBenchmark, GenerationRequest, GenerationResponse
     ] = Benchmarker()
     try:
         async for benchmark in benchmarker.run(
-            accumulator_class=_GenerativeAccumulator,
+            accumulator_class=partial(
+                GenerativeBenchmarkAccumulator,
+                output_tokenizer_factory=output_tokenizer_factory,
+            ),
             benchmark_class=GenerativeBenchmark,
             requests=request_loader,  # type: ignore[arg-type]
             backend=backend,
