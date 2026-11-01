@@ -9,8 +9,10 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from guidellm.backends.openai.request_handlers import ChatCompletionsRequestHandler
 from guidellm.schemas import (
     GenerationRequest,
+    GenerationRequestArguments,
     GenerationResponse,
     GenerativeRequestStats,
     RequestInfo,
@@ -483,3 +485,130 @@ class TestGenerativeRequestStatsToolCalls:
             output_metrics=UsageMetrics(),
         )
         assert stats.tool_calls is None
+
+
+class _WordTokenizer:
+    """Counts whitespace-separated words, and records each encoded string."""
+
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+
+    def encode(self, text: str) -> list[int]:
+        self.texts.append(text)
+        return list(range(len(text.split())))
+
+
+def _early_stop_stream() -> tuple[GenerationRequest, GenerationResponse, RequestInfo]:
+    """
+    Ten content chunks and no usage chunk, shorter than the request target.
+
+    Mirrors the streaming server in issue #1531: the client asked for 30 output
+    tokens, and the server returned 10 words with no ``usage``.
+    """
+    request = GenerationRequest(
+        request_id="req-early-stop",
+        input_metrics=UsageMetrics(text_tokens=20),
+        output_metrics=UsageMetrics(text_tokens=30),
+    )
+    handler = ChatCompletionsRequestHandler()
+    arguments = GenerationRequestArguments()
+    for index in range(10):
+        handler.add_streaming_line(
+            f'data: {{"choices": [{{"delta": {{"content": "w{index} "}}}}]}}'
+        )
+    handler.add_streaming_line("data: [DONE]")
+    response = handler.compile_streaming(request, arguments)
+    info = RequestInfo(
+        request_id=request.request_id,
+        status="completed",
+        timings=RequestTimings(
+            request_start=0.0,
+            first_token_iteration=0.02,
+            last_token_iteration=0.20,
+            request_end=0.30,
+            resolve_end=0.30,
+        ),
+    )
+    return request, response, info
+
+
+class TestCompileStatsMissingUsage:
+    """
+    Output token counts when the server omits usage.
+
+    ## WRITTEN BY AI ##
+    """
+
+    @pytest.mark.regression
+    def test_missing_usage_falls_back_to_request_target_without_tokenizer(self):
+        """
+        With no tokenizer, a response that omits usage keeps the request target.
+
+        ## WRITTEN BY AI ##
+        """
+        request, response, info = _early_stop_stream()
+        assert response.output_metrics.text_tokens is None
+        assert response.text == " ".join(f"w{index}" for index in range(10)) + " "
+
+        stats = response.compile_stats(request, info)
+
+        assert stats.output_metrics.text_tokens == 30
+        assert stats.output_tokens == 30
+        assert stats.output_tokens_per_second == pytest.approx(100.0)
+
+    @pytest.mark.regression
+    def test_missing_usage_counts_streamed_text_with_tokenizer(self):
+        """
+        A stream with no usage counts output tokens from the response text.
+
+        The request target is 30 and the stream is 10 words. Throughput follows
+        the counted text, and prompt tokens still come from the request.
+
+        ## WRITTEN BY AI ##
+        """
+        request, response, info = _early_stop_stream()
+        tokenizer = _WordTokenizer()
+
+        stats = response.compile_stats(request, info, tokenizer=tokenizer)
+
+        assert tokenizer.texts == [response.text]
+        assert stats.output_metrics.text_tokens == 10
+        assert stats.output_tokens == 10
+        assert stats.input_metrics.text_tokens == 20
+        assert stats.output_tokens_per_second == pytest.approx(10 / 0.30)
+        assert stats.time_per_output_token_ms == pytest.approx(1000 * 0.20 / 10)
+        assert stats.inter_token_latency_ms == pytest.approx(1000 * (0.20 - 0.02) / 9)
+
+    @pytest.mark.regression
+    def test_reported_usage_is_not_replaced_by_tokenizer(self):
+        """
+        Output tokens from the server are kept when usage is present.
+
+        ## WRITTEN BY AI ##
+        """
+        request, response, info = _early_stop_stream()
+        response.output_metrics.text_tokens = 7
+        tokenizer = _WordTokenizer()
+
+        stats = response.compile_stats(request, info, tokenizer=tokenizer)
+
+        assert tokenizer.texts == []
+        assert stats.output_metrics.text_tokens == 7
+
+    @pytest.mark.regression
+    def test_request_metrics_preferred_keeps_target(self):
+        """
+        prefer_response False keeps the request target even when a tokenizer
+        is available.
+
+        ## WRITTEN BY AI ##
+        """
+        request, response, info = _early_stop_stream()
+        tokenizer = _WordTokenizer()
+
+        stats = response.compile_stats(
+            request, info, prefer_response=False, tokenizer=tokenizer
+        )
+
+        assert tokenizer.texts == []
+        assert stats.output_metrics.text_tokens == 30

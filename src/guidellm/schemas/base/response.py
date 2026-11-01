@@ -9,9 +9,12 @@ implementations.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import Field
+
+if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizerBase
 
 from guidellm.schemas.base.base import StandardBaseModel
 from guidellm.schemas.base.info import RequestInfo
@@ -95,6 +98,7 @@ class GenerationResponse(StandardBaseModel):
         request: GenerationRequest,
         info: RequestInfo,
         prefer_response: bool = True,
+        tokenizer: PreTrainedTokenizerBase | None = None,
     ) -> GenerativeRequestStats:
         """
         Compile and return comprehensive request statistics.
@@ -103,10 +107,17 @@ class GenerationResponse(StandardBaseModel):
         statistical record, with preference given to response-level metrics when
         available to ensure accuracy of actual execution data.
 
+        When the response did not report an output token count, ``tokenizer``
+        counts tokens in the response text. That count replaces the request
+        target, which is the length the client asked for rather than the text
+        that came back.
+
         :param request: The original generation request containing input data
         :param info: Metadata and timing information for the request execution
         :param prefer_response: Whether to prefer response metrics over request
             metrics when both are available
+        :param tokenizer: Tokenizer for the response text when the response has
+            no output token count. When omitted, the request target is kept.
         :return: A GenerativeRequestStats object containing detailed statistics
         :raises ValueError: When request IDs don't match between objects
         """
@@ -144,6 +155,10 @@ class GenerationResponse(StandardBaseModel):
             if value is not None:
                 output_metrics_dict[key] = value
 
+        self._apply_counted_output_tokens(
+            output_metrics_dict, info, prefer_response, tokenizer
+        )
+
         # If tool calls were expected but none were recorded (either because
         # the request errored or the model produced none with ignore_continue),
         # set tool_call_count=0 so the metrics table still appears.
@@ -165,3 +180,33 @@ class GenerationResponse(StandardBaseModel):
             output_metrics=UsageMetrics(**output_metrics_dict),
             response_metrics=self.response_metrics,
         )
+
+    def _apply_counted_output_tokens(
+        self,
+        output_metrics: dict[str, Any],
+        info: RequestInfo,
+        prefer_response: bool,
+        tokenizer: PreTrainedTokenizerBase | None,
+    ) -> None:
+        """
+        Replace a missing output token count with a count of the response text.
+
+        The request target is the length the client asked for. It is kept when
+        response metrics are not preferred, the request did not complete, usage
+        already reported a count, or no tokenizer or response text is available.
+
+        :param output_metrics: Merged output metrics to update in place
+        :param info: Request execution information
+        :param prefer_response: Whether response metrics are preferred
+        :param tokenizer: Tokenizer for the response text
+        """
+        text = self.text
+        if (
+            tokenizer is None
+            or text is None
+            or not prefer_response
+            or info.status != "completed"
+            or self.output_metrics.text_tokens is not None
+        ):
+            return
+        output_metrics["text_tokens"] = len(tokenizer.encode(text))

@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import uuid
 from abc import ABC
-from collections.abc import AsyncIterator
-from typing import Generic
+from collections.abc import AsyncIterator, Callable
+from typing import Any, Generic, Protocol, runtime_checkable
 
 from guidellm.benchmark.profiles import Profile
 from guidellm.benchmark.progress import BenchmarkerProgress
@@ -43,6 +43,15 @@ from guidellm.utils.mixins import InfoMixin
 from guidellm.utils.singleton import ThreadSafeSingletonMixin
 
 __all__ = ["Benchmarker"]
+
+
+@runtime_checkable
+class _OutputTokenizerBenchmark(Protocol):
+    """Accumulator that can count output tokens when a response omits usage."""
+
+    def set_output_tokenizer_factory(self, factory: Callable[[], Any] | None) -> None:
+        """Attach the tokenizer factory used for responses that omit usage."""
+        ...
 
 
 class Benchmarker(
@@ -78,6 +87,7 @@ class Benchmarker(
         confidence: float | None = 0.95,
         warnings: list[WarningRuleArgs] | None = None,
         collectors: CollectorProcess | None = None,
+        output_tokenizer_factory: Callable[[], Any] | None = None,
     ) -> AsyncIterator[BenchmarkT]:
         """
         Execute benchmark runs across scheduling strategies in the profile.
@@ -103,6 +113,9 @@ class Benchmarker(
         :param warnings: Post-benchmark warning checks. None uses the defaults.
         :param collectors: Started collector process, told when each benchmark
             starts and stops, whose results are added to each benchmark
+        :param output_tokenizer_factory: Callable returning the benchmark
+            tokenizer. Used to count output tokens from response text when the
+            server omits usage. None leaves request output targets in place.
         :yield: Compiled benchmark result for each strategy execution
         :raises Exception: If benchmark execution or compilation fails
         """
@@ -150,6 +163,10 @@ class Benchmarker(
                     environment=InfoMixin.extract_from_obj(environment),
                 )
                 accumulator = accumulator_class(config=config)
+                if output_tokenizer_factory is not None and isinstance(
+                    accumulator, _OutputTokenizerBenchmark
+                ):
+                    accumulator.set_output_tokenizer_factory(output_tokenizer_factory)
                 scheduler_state = None
                 scheduler: Scheduler[RequestT, ResponseT] = Scheduler()
 

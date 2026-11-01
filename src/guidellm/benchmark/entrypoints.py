@@ -39,6 +39,7 @@ from guidellm.data import (
     DataLoader,
     create_data_loader,
 )
+from guidellm.data.loaders import TorchDataLoader
 from guidellm.scheduler import (
     ConstraintInitializer,
     ConstraintsInitializerFactory,
@@ -581,6 +582,11 @@ async def benchmark_generative_text(  # noqa: C901
         random_seed=benchmark_args.seed.value,  # type: ignore[attr-defined]
         console=console,
     )
+    output_tokenizer_factory = (
+        request_loader.tokenizer_factory
+        if isinstance(request_loader, TorchDataLoader)
+        else None
+    )
 
     warmup = benchmark_args.profile.warmup
     cooldown = benchmark_args.profile.cooldown
@@ -623,6 +629,7 @@ async def benchmark_generative_text(  # noqa: C901
             warmup=warmup,
             cooldown=cooldown,
             prefer_response_metrics=metrics_args.prefer_response_metrics,
+            output_tokenizer_factory=output_tokenizer_factory,
             slo=metrics_args.slo,
             confidence=metrics_args.confidence,
             warnings=metrics_args.warnings,

@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import pytest
 
+from guidellm.benchmark.schemas import BenchmarkConfig, GenerativeBenchmarkAccumulator
 from guidellm.benchmark.schemas.accumulator import GenerativeRequestsAccumulator
+from guidellm.scheduler import SchedulerState, SynchronousStrategy
 from guidellm.schemas import (
+    GenerationRequest,
+    GenerationResponse,
     GenerativeRequestStats,
     RequestInfo,
+    RequestTimings,
     UsageMetrics,
 )
 
@@ -222,3 +227,106 @@ class TestGetWithinRange:
         in_range = acc.get_within_range(10.0, 20.0, closed=True)
 
         assert [stats.request_id for stats in in_range] == ["inside"]
+
+
+class _WordTokenizer:
+    """Counts whitespace-separated words."""
+
+    def encode(self, text: str) -> list[int]:
+        return list(range(len(text.split())))
+
+
+def _benchmark_accumulator() -> GenerativeBenchmarkAccumulator:
+    return GenerativeBenchmarkAccumulator(
+        config=BenchmarkConfig(
+            run_id="missing-usage",
+            run_index=0,
+            strategy=SynchronousStrategy(),
+            constraints={},
+            profile={},
+            requests={},
+            backend={},
+            environment={},
+        )
+    )
+
+
+def _completed_info(request_id: str) -> RequestInfo:
+    return RequestInfo(
+        request_id=request_id,
+        status="completed",
+        timings=RequestTimings(
+            queued=0.0,
+            dequeued=0.01,
+            resolve_start=0.02,
+            request_start=0.0,
+            first_token_iteration=0.02,
+            last_token_iteration=0.20,
+            request_end=0.30,
+            resolve_end=0.30,
+            finalized=0.31,
+        ),
+    )
+
+
+class TestMissingUsageOutputTokens:
+    """
+    Benchmark accumulation counts output tokens when usage is omitted.
+
+    ## WRITTEN BY AI ##
+    """
+
+    @pytest.mark.regression
+    def test_factory_counts_text_shorter_than_request_target(self):
+        """
+        The configured tokenizer replaces the request target for a completed
+        response that has text and no output token count.
+
+        ## WRITTEN BY AI ##
+        """
+        loads: list[int] = []
+
+        def factory() -> _WordTokenizer:
+            loads.append(1)
+            return _WordTokenizer()
+
+        accumulator = _benchmark_accumulator()
+        accumulator.set_output_tokenizer_factory(factory)
+        request = GenerationRequest(
+            request_id="req-1",
+            input_metrics=UsageMetrics(text_tokens=20),
+            output_metrics=UsageMetrics(text_tokens=30),
+        )
+        response = GenerationResponse(
+            request_id="req-1",
+            request_args=None,
+            text=" ".join(f"w{index}" for index in range(10)),
+            output_metrics=UsageMetrics(),
+        )
+
+        accumulator.update_estimate(
+            response, request, _completed_info("req-1"), SchedulerState()
+        )
+
+        stats = accumulator.completed.requests_stats[0]
+        assert loads == [1]
+        assert stats.output_metrics.text_tokens == 10
+        assert stats.output_tokens == 10
+        assert stats.input_metrics.text_tokens == 20
+
+        used = GenerationResponse(
+            request_id="req-2",
+            request_args=None,
+            text="one two three four",
+            output_metrics=UsageMetrics(text_tokens=7),
+        )
+        used_request = GenerationRequest(
+            request_id="req-2",
+            output_metrics=UsageMetrics(text_tokens=30),
+        )
+        accumulator.update_estimate(
+            used, used_request, _completed_info("req-2"), SchedulerState()
+        )
+
+        assert loads == [1]
+        assert accumulator.completed.requests_stats[1].output_metrics.text_tokens == 7
