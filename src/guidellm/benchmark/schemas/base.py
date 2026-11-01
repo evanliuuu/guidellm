@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import uuid
 from abc import ABC, abstractmethod
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Protocol, TypeVar
 
 from pydantic import Field
 
@@ -39,6 +39,7 @@ from guidellm.schemas.benchmark.warnings import (
 __all__ = [
     "Benchmark",
     "BenchmarkAccumulator",
+    "BenchmarkAccumulatorFactory",
     "BenchmarkAccumulatorT",
     "BenchmarkConfig",
     "BenchmarkT",
@@ -51,6 +52,8 @@ BenchmarkAccumulatorT = TypeVar(
 
 BenchmarkT = TypeVar("BenchmarkT", bound="Benchmark")
 "Generic type variable for benchmark result implementations"
+
+_AccumulatorT_co = TypeVar("_AccumulatorT_co", covariant=True)
 
 
 class BenchmarkConfig(StandardBaseDict):
@@ -131,6 +134,21 @@ class BenchmarkConfig(StandardBaseDict):
     environment: dict[str, Any] = Field(
         description="Execution environment details and system metadata",
     )
+
+
+class BenchmarkAccumulatorFactory(Protocol[_AccumulatorT_co]):
+    """
+    Builds a benchmark accumulator from the ``config`` keyword.
+
+    An accumulator class and ``functools.partial`` of one both satisfy this.
+    """
+
+    def __call__(self, *, config: BenchmarkConfig) -> _AccumulatorT_co:
+        """
+        :param config: Benchmark execution configuration
+        :return: Accumulator for that configuration
+        """
+        ...
 
 
 class BenchmarkAccumulator(StandardBaseDict, ABC, Generic[RequestT, ResponseT]):

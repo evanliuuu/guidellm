@@ -10,6 +10,7 @@ from guidellm.benchmark.benchmarker import Benchmarker
 from guidellm.benchmark.entrypoints import resolve_backend, resolve_output_formats
 from guidellm.benchmark.outputs import GenerativeBenchmarkerOutput
 from guidellm.benchmark.profiles import ProfileFactory
+from guidellm.benchmark.schemas import BenchmarkAccumulator
 from guidellm.schemas.backends import (
     OpenAIHTTPBackendArgs,
     VLLMPythonAsyncBackendArgs,
@@ -237,7 +238,7 @@ async def test_benchmarker_forwards_objectives_into_benchmark_config():
         results = [
             benchmark
             async for benchmark in Benchmarker().run(
-                accumulator_class=_RecordingAccumulator,
+                accumulator_factory=_RecordingAccumulator,
                 benchmark_class=_StubBenchmark,
                 requests=_info_stub(),
                 backend=_info_stub(),
@@ -252,6 +253,64 @@ async def test_benchmarker_forwards_objectives_into_benchmark_config():
     assert results == ["compiled"]
     assert _RecordingAccumulator.configs
     assert all(config.slo == slo for config in _RecordingAccumulator.configs)
+
+
+class _PlainPydanticAccumulator(BenchmarkAccumulator[object, object]):
+    """Pydantic accumulator with the generated constructor."""
+
+    def update_estimate(self, response, request, info, scheduler_state) -> None:
+        """Ignore request updates."""
+        _ = (response, request, info, scheduler_state)
+
+
+@pytest.mark.regression
+@pytest.mark.asyncio
+async def test_benchmarker_builds_plain_pydantic_accumulator_with_config_keyword():
+    """
+    A pydantic accumulator with no custom __init__ is built as config=config.
+
+    ## WRITTEN BY AI ##
+    """
+
+    class _StubScheduler:
+        async def run(self, **kwargs):
+            _ = kwargs
+            yield (None, None, None, MagicMock())
+
+    built: list[_PlainPydanticAccumulator] = []
+
+    class _CaptureBenchmark:
+        @classmethod
+        def compile(cls, accumulator, scheduler_state):
+            _ = scheduler_state
+            built.append(accumulator)
+            return "compiled"
+
+    def _info_stub():
+        stub = MagicMock()
+        stub.info = {}
+        return stub
+
+    profile = ProfileFactory.create(SynchronousProfileArgs(), 42, {})
+    with patch("guidellm.benchmark.benchmarker.Scheduler", _StubScheduler):
+        results = [
+            benchmark
+            async for benchmark in Benchmarker().run(
+                accumulator_factory=_PlainPydanticAccumulator,
+                benchmark_class=_CaptureBenchmark,
+                requests=_info_stub(),
+                backend=_info_stub(),
+                profile=profile,
+                environment=_info_stub(),
+                warmup=TransientPhaseConfig(),
+                cooldown=TransientPhaseConfig(),
+            )
+        ]
+
+    assert results == ["compiled"]
+    assert len(built) == 1
+    assert isinstance(built[0], _PlainPydanticAccumulator)
+    assert built[0].config.run_index == 0
 
 
 @pytest.mark.regression

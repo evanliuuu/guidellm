@@ -24,6 +24,7 @@ from .accumulator import (
 from .base import (
     Benchmark,
     BenchmarkAccumulator,
+    BenchmarkAccumulatorFactory,
     BenchmarkAccumulatorT,
     BenchmarkConfig,
     BenchmarkT,
@@ -44,6 +45,7 @@ from .report import GenerativeBenchmarkMetadata, GenerativeBenchmarksReport
 __all__ = [
     "Benchmark",
     "BenchmarkAccumulator",
+    "BenchmarkAccumulatorFactory",
     "BenchmarkAccumulatorT",
     "BenchmarkConfig",
     "BenchmarkT",

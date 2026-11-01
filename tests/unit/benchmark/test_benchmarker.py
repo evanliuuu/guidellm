@@ -72,7 +72,7 @@ async def test_progress_observers_run_concurrently_and_finalize(monkeypatch, fai
         return [
             result
             async for result in module.Benchmarker().run(
-                accumulator_class=accumulator_class,
+                accumulator_factory=accumulator_class,
                 benchmark_class=benchmark_class,
                 requests=[],
                 backend=Mock(),
@@ -175,7 +175,7 @@ async def test_collectors_wrap_each_benchmark(monkeypatch):
     results = [
         result
         async for result in module.Benchmarker().run(
-            accumulator_class=Mock(),
+            accumulator_factory=Mock(),
             benchmark_class=benchmark_class,
             requests=[],
             backend=Mock(),
@@ -217,7 +217,7 @@ async def test_collectors_stop_when_requests_fail(monkeypatch):
 
     with pytest.raises(RuntimeError, match="scheduler failure"):
         async for _ in module.Benchmarker().run(
-            accumulator_class=Mock(),
+            accumulator_factory=Mock(),
             benchmark_class=Mock(),
             requests=[],
             backend=Mock(),

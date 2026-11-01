@@ -577,13 +577,12 @@ async def benchmark_generative_text(  # noqa: C901
     request_loader: DataLoader[GenerationRequest] = await create_data_loader(
         loader_config=benchmark_args.data_loader,
         data_config=benchmark_args.data,
-        tokenizer_config=benchmark_args.tokenizer,
+        tokenizer_factory=output_tokenizer_factory,
         column_mapper_config=benchmark_args.data_column_mapper,
         preprocessors_config=benchmark_args.data_preprocessors,
         finalizer_config=benchmark_args.data_finalizer,
         random_seed=benchmark_args.seed.value,  # type: ignore[attr-defined]
         console=console,
-        tokenizer_factory=output_tokenizer_factory,
     )
 
     warmup = benchmark_args.profile.warmup
@@ -616,7 +615,7 @@ async def benchmark_generative_text(  # noqa: C901
     ] = Benchmarker()
     try:
         async for benchmark in benchmarker.run(
-            accumulator_class=partial(
+            accumulator_factory=partial(
                 GenerativeBenchmarkAccumulator,
                 output_tokenizer_factory=output_tokenizer_factory,
             ),
