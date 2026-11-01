@@ -15,9 +15,9 @@ from __future__ import annotations
 import random
 import time
 from collections.abc import Callable
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, PrivateAttr
 
 from guidellm.benchmark.schemas.base import BenchmarkAccumulator, BenchmarkConfig
 from guidellm.scheduler import SchedulerState
@@ -852,6 +852,22 @@ class GenerativeBenchmarkAccumulator(
         default_factory=GenerativeMetricsAccumulator,
         description="Running metrics for incomplete requests",
     )
+    _output_tokenizer_factory: OutputTokenizerFactory | None = PrivateAttr(default=None)
+
+    def __init__(
+        self,
+        output_tokenizer_factory: OutputTokenizerFactory | None = None,
+        **data: Any,
+    ) -> None:
+        """
+        Build the accumulator and keep the tokenizer factory off serialized state.
+
+        :param output_tokenizer_factory: Factory for counting output tokens when
+            a response omits usage
+        :param data: Accumulator fields, including ``config``
+        """
+        super().__init__(**data)
+        self._output_tokenizer_factory = output_tokenizer_factory
 
     def model_post_init(self, __context):
         """

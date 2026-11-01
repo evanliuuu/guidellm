@@ -34,7 +34,6 @@ from guidellm.scheduler import (
     Scheduler,
     SchedulingStrategy,
 )
-from guidellm.schemas.base.response import OutputTokenizerFactory
 from guidellm.schemas.benchmark import GoodputSLO, TransientPhaseConfig
 from guidellm.schemas.benchmark.warnings import (
     WarningRuleArgs,
@@ -79,7 +78,6 @@ class Benchmarker(
         confidence: float | None = 0.95,
         warnings: list[WarningRuleArgs] | None = None,
         collectors: CollectorProcess | None = None,
-        output_tokenizer_factory: OutputTokenizerFactory | None = None,
     ) -> AsyncIterator[BenchmarkT]:
         """
         Execute benchmark runs across scheduling strategies in the profile.
@@ -105,9 +103,6 @@ class Benchmarker(
         :param warnings: Post-benchmark warning checks. None uses the defaults.
         :param collectors: Started collector process, told when each benchmark
             starts and stops, whose results are added to each benchmark
-        :param output_tokenizer_factory: Factory for the benchmark tokenizer.
-            Counts output tokens from response text when the server omits usage.
-            None leaves request output targets in place.
         :yield: Compiled benchmark result for each strategy execution
         :raises Exception: If benchmark execution or compilation fails
         """
@@ -154,10 +149,7 @@ class Benchmarker(
                     backend=InfoMixin.extract_from_obj(backend),
                     environment=InfoMixin.extract_from_obj(environment),
                 )
-                accumulator = accumulator_class(
-                    config=config,
-                    output_tokenizer_factory=output_tokenizer_factory,
-                )
+                accumulator = accumulator_class(config=config)
                 scheduler_state = None
                 scheduler: Scheduler[RequestT, ResponseT] = Scheduler()
 

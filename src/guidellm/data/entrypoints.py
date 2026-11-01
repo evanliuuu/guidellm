@@ -13,6 +13,7 @@ from guidellm.data.preprocessors import (
 )
 from guidellm.data.schemas import DatasetType
 from guidellm.data.tokenizers import TokenizerRegistry
+from guidellm.schemas.base.response import OutputTokenizerFactory
 from guidellm.schemas.data import (
     DataArgs,
     DataFinalizerArgs,
@@ -34,6 +35,7 @@ async def create_data_loader(
     finalizer_config: DataFinalizerArgs,
     random_seed: int = 42,
     console: Console | None = None,
+    tokenizer_factory: OutputTokenizerFactory | None = None,
 ) -> DataLoader:
     """
     Factory function to create a DataLoader instance based on provided configurations.
@@ -46,11 +48,14 @@ async def create_data_loader(
     :param finalizer_config: Configuration for the dataset finalizer.
     :param random_seed: Seed for random operations to ensure reproducibility.
     :param console: Optional Console instance for logging and progress display.
+    :param tokenizer_factory: Tokenizer factory to reuse. When omitted, one is
+        created from ``tokenizer_config``.
     :return: An instance of DataLoader configured according to the provided arguments.
     """
     rng = Random(random_seed)
 
-    tokenizer_factory = TokenizerRegistry.create(tokenizer_config)
+    if tokenizer_factory is None:
+        tokenizer_factory = TokenizerRegistry.create(tokenizer_config)
 
     console_step = (
         console.print_update_step(title="Deserializing datasets from configuration")

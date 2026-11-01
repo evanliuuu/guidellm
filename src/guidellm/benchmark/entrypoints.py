@@ -30,6 +30,7 @@ from guidellm.benchmark.progress import (
     GenerativeLoggingBenchmarkerProgress,
 )
 from guidellm.benchmark.schemas import (
+    BenchmarkConfig,
     GenerativeBenchmark,
     GenerativeBenchmarkAccumulator,
     GenerativeBenchmarksReport,
@@ -572,6 +573,7 @@ async def benchmark_generative_text(  # noqa: C901
         console=console,
     )
     await resolve_tokenizer(args=benchmark_args, model=model, console=console)
+    output_tokenizer_factory = TokenizerRegistry.create(benchmark_args.tokenizer)
     request_loader: DataLoader[GenerationRequest] = await create_data_loader(
         loader_config=benchmark_args.data_loader,
         data_config=benchmark_args.data,
@@ -581,8 +583,8 @@ async def benchmark_generative_text(  # noqa: C901
         finalizer_config=benchmark_args.data_finalizer,
         random_seed=benchmark_args.seed.value,  # type: ignore[attr-defined]
         console=console,
+        tokenizer_factory=output_tokenizer_factory,
     )
-    output_tokenizer_factory = TokenizerRegistry.create(benchmark_args.tokenizer)
 
     warmup = benchmark_args.profile.warmup
     cooldown = benchmark_args.profile.cooldown
@@ -609,12 +611,21 @@ async def benchmark_generative_text(  # noqa: C901
         collectors=benchmark_args.collectors, console=console
     )
 
+    class _GenerativeAccumulator(GenerativeBenchmarkAccumulator):
+        """Generative accumulator bound to this run's tokenizer factory."""
+
+        def __init__(self, config: BenchmarkConfig) -> None:
+            super().__init__(
+                output_tokenizer_factory=output_tokenizer_factory,
+                config=config,
+            )
+
     benchmarker: Benchmarker[
         GenerativeBenchmark, GenerationRequest, GenerationResponse
     ] = Benchmarker()
     try:
         async for benchmark in benchmarker.run(
-            accumulator_class=GenerativeBenchmarkAccumulator,
+            accumulator_class=_GenerativeAccumulator,
             benchmark_class=GenerativeBenchmark,
             requests=request_loader,  # type: ignore[arg-type]
             backend=backend,
@@ -625,7 +636,6 @@ async def benchmark_generative_text(  # noqa: C901
             warmup=warmup,
             cooldown=cooldown,
             prefer_response_metrics=metrics_args.prefer_response_metrics,
-            output_tokenizer_factory=output_tokenizer_factory,
             slo=metrics_args.slo,
             confidence=metrics_args.confidence,
             warnings=metrics_args.warnings,
