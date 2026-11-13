@@ -12,6 +12,7 @@ from unittest.mock import Mock
 
 import imageio
 import pytest
+from datasets import Dataset
 from PIL import Image
 from pydantic import ValidationError
 
@@ -317,8 +318,11 @@ class TestSyntheticImageDeserializer:
         assert isinstance(ds, SyntheticImageDataset)
 
     @pytest.mark.regression
-    def test_images_per_request_emits_indexed_columns(self):
-        """## WRITTEN BY AI ##"""
+    def test_images_per_request_emits_one_image_column(self):
+        """Several images in one row share a single image column.
+
+        ## WRITTEN BY AI ##
+        """
         d = SyntheticImageDatasetDeserializer()
         ds = d(
             config=SyntheticImageDataArgs(
@@ -331,11 +335,10 @@ class TestSyntheticImageDeserializer:
             random_seed=42,
         )
         row = next(iter(ds))
-        assert "image_0" in row
-        assert "image_1" in row
-        assert "image_2" in row
-        # All three images in the same row should be byte-different.
-        digests = {row[f"image_{i}"]["image"] for i in range(3)}
+        assert set(row) == {"image", "output_tokens_count_0"}
+        assert len(row["image"]) == 3
+        assert row["output_tokens_count_0"] == 2
+        digests = {image["image"] for image in row["image"]}
         assert len(digests) == 3
 
 
@@ -398,6 +401,30 @@ def test_synthetic_text_and_images_share_one_request():
     assert requests[0].input_metrics.text_tokens == 8
     assert requests[0].columns["image_column"] == expected
     assert requests[0].output_metrics.text_tokens == 7
+
+
+@pytest.mark.regression
+def test_indexed_image_columns_stay_separate_turns():
+    """image_0 and image_1 on a user dataset remain separate turns.
+
+    ## WRITTEN BY AI ##
+    """
+    images = [synthesize_image(8, 8, seed=42, row_index=index) for index in range(2)]
+    dataset = Dataset.from_dict(
+        {
+            "image_0": [images[0]],
+            "image_1": [images[1]],
+            "output_tokens_count_0": [4],
+            "output_tokens_count_1": [5],
+        }
+    )
+    requests = _requests_from_datasets([dataset])
+
+    assert [request.columns["image_column"] for request in requests] == [
+        [images[0]],
+        [images[1]],
+    ]
+    assert [request.output_metrics.text_tokens for request in requests] == [4, 5]
 
 
 class TestSyntheticVideoDeserializer:
