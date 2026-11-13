@@ -19,14 +19,20 @@ from guidellm.data.deserializers import (
     DatasetDeserializerFactory,
     SyntheticImageDataset,
     SyntheticImageDatasetDeserializer,
+    SyntheticTextDataset,
     SyntheticVideoDataset,
     SyntheticVideoDatasetDeserializer,
 )
+from guidellm.data.finalizers.generative import GenerativeRequestFinalizer
 from guidellm.data.preprocessors.encoders import MediaEncoder
+from guidellm.data.preprocessors.mappers import GenerativeColumnMapper
 from guidellm.schemas.data import (
     DataArgs,
+    GenerativeColumnMapperArgs,
+    GenerativeRequestFinalizerArgs,
     MediaEncoderArgs,
     SyntheticImageDataArgs,
+    SyntheticTextDataArgs,
     SyntheticVideoDataArgs,
 )
 from guidellm.utils.vision import synthesize_image, synthesize_video
@@ -331,6 +337,67 @@ class TestSyntheticImageDeserializer:
         # All three images in the same row should be byte-different.
         digests = {row[f"image_{i}"]["image"] for i in range(3)}
         assert len(digests) == 3
+
+
+def _requests_from_datasets(datasets: list[Any]) -> list[Any]:
+    mapper = GenerativeColumnMapper(GenerativeColumnMapperArgs())
+    mapper.setup_data(datasets)
+    mapped = mapper([{"dataset": next(iter(dataset))} for dataset in datasets])
+    encoded = MediaEncoder(MediaEncoderArgs())(mapped)
+    graph = GenerativeRequestFinalizer(GenerativeRequestFinalizerArgs())(encoded)
+    return [node.request for node in graph.nodes.values()]
+
+
+def _image_dataset(
+    images_per_request: int, output_tokens: int
+) -> SyntheticImageDataset:
+    return SyntheticImageDataset(
+        SyntheticImageDataArgs(
+            width=8,
+            height=8,
+            images_per_request=images_per_request,
+            output_tokens=output_tokens,
+            seed=42,
+        )
+    )
+
+
+@pytest.mark.regression
+@pytest.mark.parametrize("images_per_request", [1, 2])
+def test_images_per_request_land_on_one_request(images_per_request: int):
+    """One row's images stay on one request, in generation order.
+
+    ## WRITTEN BY AI ##
+    """
+    requests = _requests_from_datasets([_image_dataset(images_per_request, 4)])
+    expected = [
+        synthesize_image(8, 8, seed=42, row_index=index)
+        for index in range(images_per_request)
+    ]
+
+    assert len(requests) == 1
+    assert requests[0].columns["image_column"] == expected
+    assert requests[0].output_metrics.text_tokens == 4
+
+
+@pytest.mark.regression
+def test_synthetic_text_and_images_share_one_request():
+    """Synthetic text and several images attach to the text conversation's root.
+
+    ## WRITTEN BY AI ##
+    """
+    text = SyntheticTextDataset(
+        SyntheticTextDataArgs(prompt_tokens=8, output_tokens=3),
+        processor=_mock_tokenizer(),
+    )
+    requests = _requests_from_datasets([text, _image_dataset(2, 4)])
+    expected = [synthesize_image(8, 8, seed=42, row_index=index) for index in range(2)]
+
+    assert len(requests) == 1
+    assert requests[0].columns["text_column"]
+    assert requests[0].input_metrics.text_tokens == 8
+    assert requests[0].columns["image_column"] == expected
+    assert requests[0].output_metrics.text_tokens == 7
 
 
 class TestSyntheticVideoDeserializer:
