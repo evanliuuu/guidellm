@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import gc
-import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, cast
@@ -39,6 +38,7 @@ from guidellm.schemas import (
     StandardBaseModel,
 )
 from guidellm.schemas.backends import BackendArgs, VLLMPythonBatchBackendArgs
+from guidellm.utils.clock import wall_time
 
 __all__ = ["VLLMPythonBatchBackend"]
 
@@ -553,7 +553,7 @@ class VLLMPythonBatchBackend(VLLMPythonAsyncBackend):
             max_tokens=max_tokens,
         )
 
-        request_info.timings.request_start = time.time()
+        request_info.timings.request_start = wall_time()
 
         # Enqueue atomically with shutdown check
         if self._batch_lock is None:
@@ -585,7 +585,7 @@ class VLLMPythonBatchBackend(VLLMPythonAsyncBackend):
         # Wire vLLM request metrics into timing info
         self._wire_vllm_metrics(request_info, request_output)
 
-        request_info.timings.request_end = time.time()
+        request_info.timings.request_end = wall_time()
 
         text = self._text_from_output(request_output)
         usage = self._usage_from_output(request_output)

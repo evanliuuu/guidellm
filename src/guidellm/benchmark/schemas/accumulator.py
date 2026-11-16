@@ -13,7 +13,6 @@ incomplete requests.
 from __future__ import annotations
 
 import random
-import time
 from collections.abc import Callable
 from typing import Literal
 
@@ -30,6 +29,7 @@ from guidellm.schemas import (
     StandardBaseModel,
     StatusBreakdown,
 )
+from guidellm.utils.clock import wall_time
 
 __all__ = [
     "GenerativeBenchmarkAccumulator",
@@ -459,7 +459,7 @@ class SchedulerMetricsAccumulator(StandardBaseModel):
             self.resolve_time.update_estimate(value=resolve_end - timings.resolve_start)
 
         self.finalized_delay.update_estimate(value=finalized - resolve_end)
-        self.processed_delay.update_estimate(value=time.time() - finalized)
+        self.processed_delay.update_estimate(value=wall_time() - finalized)
 
 
 class GenerativeMetricsAccumulator(StandardBaseModel):

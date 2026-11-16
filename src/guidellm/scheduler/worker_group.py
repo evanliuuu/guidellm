@@ -42,6 +42,7 @@ from guidellm.scheduler.strategies import SchedulingStrategy
 from guidellm.scheduler.worker import WorkerProcess
 from guidellm.schemas import RequestInfo
 from guidellm.settings import settings
+from guidellm.utils.clock import capture_wall_clock, wall_time
 from guidellm.utils.messaging import (
     InterProcessMessaging,
     InterProcessMessagingManagerQueue,
@@ -156,6 +157,8 @@ class WorkerProcessGroup(Generic[RequestT, ResponseT]):
 
         :raises RuntimeError: If process initialization or startup fails
         """
+        capture_wall_clock()
+
         # Processes limits and params
         max_conc: int
         if (
@@ -688,7 +691,7 @@ class WorkerGroupState(Generic[RequestT, ResponseT]):
                         settings=node.settings,
                     )
                     state_update = self.update_state(request_info)
-                    request_info.timings.queued = time.time()
+                    request_info.timings.queued = wall_time()
                     if self.messaging.buffer_receive_queue is None:
                         raise RuntimeError("buffer receive queue is None")
                     self.messaging.buffer_receive_queue.sync_put(
@@ -836,7 +839,7 @@ class WorkerGroupState(Generic[RequestT, ResponseT]):
             if add_constraints is not None:
                 self.constraints.update(add_constraints)
 
-            self._state.end_time = time.time()  # Always update in case last update
+            self._state.end_time = wall_time()  # Always update in case last update
             if info is not None:
                 self._update_state_request_counts(info)
             if generation_delay is not None:
@@ -853,7 +856,7 @@ class WorkerGroupState(Generic[RequestT, ResponseT]):
         )
 
     def _update_state_request_counts(self, info: RequestInfo):
-        finalized = time.time()
+        finalized = wall_time()
 
         if info.status == "queued":
             self._queued_request_ids.add(info.request_id)
@@ -964,10 +967,10 @@ class WorkerGroupState(Generic[RequestT, ResponseT]):
 
         if stop_queuing_actions:
             self._state.end_queuing_constraints = stop_queuing_actions
-            self._state.end_queuing_time = time.time()
+            self._state.end_queuing_time = wall_time()
 
         if stop_processing_actions:
             self._state.end_processing_constraints = stop_processing_actions
-            self._state.end_processing_time = time.time()
+            self._state.end_processing_time = wall_time()
             if self._state.progress.stop_time is None:
                 self._state.progress.stop_time = self._state.end_processing_time

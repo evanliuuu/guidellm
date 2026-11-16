@@ -10,7 +10,6 @@ configuration through dict-style parameters.
 from __future__ import annotations
 
 import asyncio
-import time
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -36,6 +35,7 @@ from guidellm.schemas import (
 )
 from guidellm.schemas.backends import BackendArgs, VLLMPythonAsyncBackendArgs
 from guidellm.utils import audio, vision
+from guidellm.utils.clock import wall_time
 
 # Sentinel for "chat template not yet resolved" cache.
 _CHAT_TEMPLATE_UNSET: object = object()
@@ -756,7 +756,7 @@ class VLLMPythonAsyncBackend(Backend):
             async for request_output in engine.generate(  # type: ignore[misc]
                 prompt_arg, sampling_params, request_id
             ):
-                iter_time = time.time()
+                iter_time = wall_time()
                 self._update_request_timing(request_info, iter_time)
                 state["final_output"] = request_output
 
@@ -781,7 +781,7 @@ class VLLMPythonAsyncBackend(Backend):
                 f"vLLM generation failed: {type(e).__name__}: {e}"
             ) from e
 
-        request_info.timings.request_end = time.time()
+        request_info.timings.request_end = wall_time()
         final_output = state["final_output"]
         result = self._build_final_response(
             request,
@@ -836,7 +836,7 @@ class VLLMPythonAsyncBackend(Backend):
             generate_input = resolved.prompt
 
         request_id = str(uuid.uuid4())
-        request_info.timings.request_start = time.time()
+        request_info.timings.request_start = wall_time()
 
         gen_state: dict[str, Any] = {}
         try:

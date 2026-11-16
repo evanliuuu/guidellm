@@ -1243,8 +1243,7 @@ async def test_trace_request_start_records_first_request_headers(protocol: str):
     post = httpcore2.Request(b"POST", "http://test/v1/chat/completions")
     event = f"{protocol}.send_request_headers.started"
 
-    with patch("guidellm.backends.openai.http.time") as mock_time:
-        mock_time.time.side_effect = [2.0, 3.0]
+    with patch("guidellm.backends.openai.http.wall_time", side_effect=[2.0, 3.0]):
         await trace("connection.connect_tcp.started", {})
         await trace(event, {"request": tunnel})
         assert request_info.timings.request_start == 1.0
@@ -1549,8 +1548,9 @@ async def test_wall_clock_step_does_not_change_stream_durations(
     itl = timings.last_token_iteration - timings.first_token_iteration
     wall_now = real_time()
     measured = (
-        f"latency {latency:.3f}s TTFT {ttft:.3f}s ITL {itl:.3f}s "
-        f"request_end offset {timings.request_end - wall_now:.3f}s"
+        f"latency {latency * 1000:.1f} ms TTFT {ttft * 1000:.1f} ms "
+        f"ITL {itl * 1000:.1f} ms "
+        f"request_end offset {(timings.request_end - wall_now) * 1000:.1f} ms"
     )
     assert latency < 1.0, measured
     assert ttft < 1.0, measured

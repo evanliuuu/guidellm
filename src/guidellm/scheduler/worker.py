@@ -45,6 +45,7 @@ from guidellm.scheduler.schemas import (
 )
 from guidellm.scheduler.strategies import SchedulingStrategy
 from guidellm.schemas import RequestInfo
+from guidellm.utils.clock import wall_time
 from guidellm.utils.messaging import InterProcessMessaging
 from guidellm.utils.synchronous import (
     wait_for_sync_barrier,
@@ -380,7 +381,7 @@ class WorkerProcess(Generic[RequestT, ResponseT]):
                 if request_info is not None:
                     request_info.scheduler_node_id = self.worker_index
                     request_info.error = "Request was cancelled"
-                    request_info.timings.resolve_end = time.time()
+                    request_info.timings.resolve_end = wall_time()
                     self._send_update("cancelled", None, node.request, request_info)
         self.turns_queue.clear()
 
@@ -396,7 +397,7 @@ class WorkerProcess(Generic[RequestT, ResponseT]):
                 if request_info is not None:
                     request_info.scheduler_node_id = self.worker_index
                     request_info.error = "Request was cancelled"
-                    request_info.timings.resolve_end = time.time()
+                    request_info.timings.resolve_end = wall_time()
                     self._send_update("cancelled", None, node.request, request_info)
 
     async def _get_next_ready_node(
@@ -459,7 +460,7 @@ class WorkerProcess(Generic[RequestT, ResponseT]):
         except asyncio.CancelledError:
             if request is not None and request_info is not None:
                 request_info.error = "Request was cancelled"
-                request_info.timings.resolve_end = time.time()
+                request_info.timings.resolve_end = wall_time()
                 self._send_update("cancelled", response, request, request_info)
             if state is not None:
                 self._abort_remaining_nodes(state, skip_node_id=node_id)
@@ -486,7 +487,7 @@ class WorkerProcess(Generic[RequestT, ResponseT]):
             raise RuntimeError(
                 f"No RequestInfo for node '{node_id}' in graph '{state.graph.graph_id}'"
             )
-        request_info.timings.dequeued = time.time()
+        request_info.timings.dequeued = wall_time()
         request_info.scheduler_node_id = self.worker_index
         request_info.timings.targeted_start = target_start
         self._send_update("pending", None, request, request_info)
@@ -539,7 +540,7 @@ class WorkerProcess(Generic[RequestT, ResponseT]):
         response: ResponseT | None,
     ) -> None:
         """Mark node completed and clean up finished graphs."""
-        request_info.timings.resolve_end = time.time()
+        request_info.timings.resolve_end = wall_time()
         self._send_update("completed", response, request, request_info)
         state.mark_completed(node_id, request, response)
         if state.is_complete:
@@ -558,7 +559,7 @@ class WorkerProcess(Generic[RequestT, ResponseT]):
         if request is not None and request_info is not None:
             request_info.error = repr(exc)
             request_info.traceback = traceback.format_exc()
-            request_info.timings.resolve_end = time.time()
+            request_info.timings.resolve_end = wall_time()
             self._send_update("errored", response, request, request_info)
             logger.opt(exception=True).debug(
                 f"Backend exception for request {request_info.request_id}"
@@ -592,7 +593,7 @@ class WorkerProcess(Generic[RequestT, ResponseT]):
             rem_info = state.request_infos.get(rem_id)
             if rem_info is not None:
                 rem_info.error = "Request was cancelled"
-                rem_info.timings.resolve_end = time.time()
+                rem_info.timings.resolve_end = wall_time()
                 self._send_update("cancelled", None, rem_node.request, rem_info)
         if state in self.turns_queue:
             self.turns_queue.remove(state)
@@ -607,7 +608,7 @@ class WorkerProcess(Generic[RequestT, ResponseT]):
             request_info.timings.scheduled_at = target_start
 
         # Process the request with the backend
-        request_info.timings.resolve_start = time.time()
+        request_info.timings.resolve_start = wall_time()
         self._send_update("in_progress", None, request, request_info)
 
     def _send_update(

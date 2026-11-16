@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import ssl
-import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 from urllib.parse import ParseResult, urlparse
@@ -41,6 +40,7 @@ from guidellm.schemas import (
     RequestInfo,
 )
 from guidellm.schemas.backends import OpenAIWebSocketBackendArgs
+from guidellm.utils.clock import wall_time
 from guidellm.utils.imports import json
 
 __all__ = [
@@ -69,7 +69,7 @@ def _record_content_tokens(
     :param record_request_iteration: Whether to increment request iteration counters.
     :return: True when a prefetch ``(None, request_info)`` yield is needed.
     """
-    iter_time = time.time()
+    iter_time = wall_time()
     if record_request_iteration:
         if request_info.timings.first_request_iteration is None:
             request_info.timings.first_request_iteration = iter_time
@@ -100,7 +100,7 @@ def _record_request_sent(request_info: RequestInfo) -> None:
 
     :param request_info: Mutable timing state for the in-flight request.
     """
-    sent_time = time.time()
+    sent_time = wall_time()
     request_info.timings.last_request_sent = sent_time
     request_info.timings.request_sent_sum += sent_time
     request_info.timings.request_sent_count += 1
@@ -384,7 +384,7 @@ class OpenAIWebSocketBackend(Backend):
         ws_headers = build_headers(self._args.api_key)
 
         try:
-            request_info.timings.request_start = time.time()
+            request_info.timings.request_start = wall_time()
             connect_kw: dict[str, Any] = {
                 "ssl": ssl_ctx,
                 "open_timeout": self._args.timeout_connect,
@@ -425,7 +425,7 @@ class OpenAIWebSocketBackend(Backend):
                     update = handler.add_streaming_event(event)
 
                     if update.kind is WSEventResult.STREAM_END:
-                        iter_time = time.time()
+                        iter_time = wall_time()
                         request_info.timings.request_end = iter_time
                         # Done-only path: first-token timing when text exists.
                         if (
@@ -469,7 +469,7 @@ class OpenAIWebSocketBackend(Backend):
                 request_info.timings.request_start is not None
                 and request_info.timings.request_end is None
             ):
-                request_info.timings.request_end = time.time()
+                request_info.timings.request_end = wall_time()
 
     async def _recv_ws(self, ws: ClientConnection) -> str:
         """

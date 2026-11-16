@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import codecs
 import contextlib
-import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
@@ -32,6 +31,7 @@ from guidellm.schemas import (
     RequestInfo,
 )
 from guidellm.schemas.backends import OpenAIHTTPBackendArgs
+from guidellm.utils.clock import wall_time
 from guidellm.utils.dict import deep_filter
 
 __all__ = [
@@ -320,12 +320,12 @@ class OpenAIHTTPBackend(Backend):
             raise RuntimeError("Backend not started up for process.")
 
         # This timestamp is overridden if a trace event is handled
-        request_info.timings.request_start = time.time()
+        request_info.timings.request_start = wall_time()
         response = await self._async_client.request(
             **request_kwargs,
             extensions={"trace": self._trace_request_start(request_info)},
         )
-        request_info.timings.request_end = time.time()
+        request_info.timings.request_end = wall_time()
         await self._raise_for_status(response)
         data = response.json()
         gen_response = request_handler.compile_non_streaming(request, arguments, data)
@@ -360,7 +360,7 @@ class OpenAIHTTPBackend(Backend):
 
         try:
             # This timestamp is overridden if a trace event is handled
-            request_info.timings.request_start = time.time()
+            request_info.timings.request_start = wall_time()
 
             stream = await self._async_client.send(
                 self._async_client.build_request(
@@ -376,7 +376,7 @@ class OpenAIHTTPBackend(Backend):
 
                 async for chunk in lines:
                     stream.raise_for_status()
-                    iter_time = time.time()
+                    iter_time = wall_time()
 
                     if request_info.timings.first_request_iteration is None:
                         request_info.timings.first_request_iteration = iter_time
@@ -411,7 +411,7 @@ class OpenAIHTTPBackend(Backend):
                     request_info.timings.last_token_iteration = iter_time
                     request_info.timings.token_iterations += iterations
 
-                request_info.timings.request_end = time.time()
+                request_info.timings.request_end = wall_time()
             finally:
                 await self._close_stream(stream, lines, end_reached)
 
@@ -509,7 +509,7 @@ class OpenAIHTTPBackend(Backend):
             if request is not None and request.method == b"CONNECT":
                 return
             recorded = True
-            request_info.timings.request_start = time.time()
+            request_info.timings.request_start = wall_time()
 
         return trace
 
