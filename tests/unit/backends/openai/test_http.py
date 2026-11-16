@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import AsyncIterator, Iterable
 from contextlib import nullcontext
 from typing import Literal
@@ -1461,3 +1462,98 @@ async def test_validate_and_models_send_extras_headers_and_params(
         sent = route.calls.last.request
         assert sent.headers["X-Api-Key"] == "secret"
         assert sent.url.params["api-version"] == "2024-10-21"
+
+
+async def _stream_lines_stepping_at(
+    step_at: int, stepped: dict[str, bool]
+) -> AsyncIterator[bytes]:
+    """Yield two stream events, stepping the patched wall clock at ``step_at``."""
+    lines = (
+        b'data: {"choices": [{"delta": {"content": "a"}}]}\n\n',
+        b'data: {"choices": [{"delta": {"content": "b"}}]}\n\n',
+    )
+    for index, line in enumerate(lines):
+        if index == step_at:
+            stepped["on"] = True
+        yield line
+
+
+@pytest.mark.regression
+@pytest.mark.asyncio
+@pytest.mark.parametrize("step_at", [0, 1])
+@async_timeout(10.0)
+async def test_wall_clock_step_does_not_change_stream_durations(
+    httpx2_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+    step_at: int,
+):
+    """A 3 s wall-clock step during a stream leaves latency, TTFT, and ITL alone.
+
+    Reported timestamps stay on the unstepped Unix clock.
+
+    ## WRITTEN BY AI ##
+    """
+    real_time = time.time
+    stepped = {"on": False}
+
+    def stepped_time() -> float:
+        return real_time() + (3.0 if stepped["on"] else 0.0)
+
+    monkeypatch.setattr(time, "time", stepped_time)
+    httpx2_mock.route(url="http://test/v1/chat/completions").respond(
+        content=_stream_lines_stepping_at(step_at, stepped)
+    )
+    backend = _make_backend(
+        target="http://test",
+        model="test-model",
+        stream=True,
+        validate_backend=False,
+        request_format="/v1/chat/completions",
+    )
+    await backend.process_startup()
+    request = GenerationRequest()
+    request_info = RequestInfo(
+        request_id="clock-step",
+        status="pending",
+        scheduler_node_id=1,
+        scheduler_process_id=1,
+        scheduler_start_time=real_time(),
+    )
+    mock_handler = Mock(spec=OpenAIRequestHandler)
+    mock_handler.format.return_value = GenerationRequestArguments(
+        body={"messages": [{"role": "user", "content": "hi"}], "stream": True},
+        stream=True,
+    )
+    mock_handler.add_streaming_line.return_value = 1
+    mock_handler.last_iteration_had_content = True
+    mock_handler.compile_streaming.return_value = GenerationResponse(
+        request_id="clock-step", request_args="test args"
+    )
+
+    try:
+        with patch.object(
+            OpenAIRequestHandlerFactory, "create", return_value=mock_handler
+        ):
+            async for _response, _info in backend.resolve(request, request_info):
+                pass
+    finally:
+        await backend.process_shutdown()
+
+    timings = request_info.timings
+    assert timings.request_start is not None
+    assert timings.request_end is not None
+    assert timings.first_token_iteration is not None
+    assert timings.last_token_iteration is not None
+    latency = timings.request_end - timings.request_start
+    ttft = timings.first_token_iteration - timings.request_start
+    itl = timings.last_token_iteration - timings.first_token_iteration
+    wall_now = real_time()
+    measured = (
+        f"latency {latency:.3f}s TTFT {ttft:.3f}s ITL {itl:.3f}s "
+        f"request_end offset {timings.request_end - wall_now:.3f}s"
+    )
+    assert latency < 1.0, measured
+    assert ttft < 1.0, measured
+    assert itl < 1.0, measured
+    assert abs(timings.request_start - wall_now) < 1.0, measured
+    assert abs(timings.request_end - wall_now) < 1.0, measured

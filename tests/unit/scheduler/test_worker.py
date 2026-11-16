@@ -1175,3 +1175,64 @@ class TestWorkerLoopLag:
         )
 
         assert max(value for value, _ in histograms.samples()) < 0.1
+
+
+@pytest.mark.regression
+def test_wall_clock_step_does_not_change_scheduler_span(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A wall-clock step between dequeue and completion does not add to the span.
+
+    The stored timestamps stay on the unstepped Unix clock.
+
+    ## WRITTEN BY AI ##
+    """
+    real_time = time.time
+    stepped = {"on": False}
+
+    def stepped_time() -> float:
+        return real_time() + (3.0 if stepped["on"] else 0.0)
+
+    worker = WorkerProcess(
+        worker_index=0,
+        messaging=MockMessaging(worker_index=0),
+        backend=MockBackend(),
+        strategy=SynchronousStrategy(),
+        async_limit=1,
+        fut_scheduling_time_limit=0.0,
+        startup_barrier=Barrier(2),
+        requests_generated_event=Event(),
+        constraint_reached_event=Event(),
+        shutdown_event=Event(),
+        error_event=Event(),
+        stdout_conn=None,
+        stderr_conn=None,
+        parent_logger=None,
+    )
+    graph = ConversationGraph(
+        graph_id="clock-step",
+        nodes={"n0": ConversationNode(node_id="n0", agent_id="a", request="r0")},
+        edges=[],
+        request_infos={"n0": RequestInfo(request_id="id0", node_id="n0")},
+    )
+    state = DAGExecutionState(graph)
+    worker.turns_queue.append(state)
+    monkeypatch.setattr(time, "time", stepped_time)
+
+    _, request_info = worker._prepare_node(state, "n0", target_start=real_time())
+    stepped["on"] = True
+    worker._finalize_node(state, "n0", "r0", request_info, "resp")
+
+    dequeued = request_info.timings.dequeued
+    resolve_end = request_info.timings.resolve_end
+    assert dequeued is not None
+    assert resolve_end is not None
+    span = resolve_end - dequeued
+    wall_now = real_time()
+    assert span < 1.0, f"scheduler span {span:.3f}s includes the clock step"
+    assert abs(dequeued - wall_now) < 1.0, (
+        f"dequeued {dequeued:.3f} left the wall clock"
+    )
+    assert abs(resolve_end - wall_now) < 1.0, (
+        f"resolve_end {resolve_end:.3f} left the wall clock"
+    )
