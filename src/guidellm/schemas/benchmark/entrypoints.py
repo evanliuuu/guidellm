@@ -578,6 +578,17 @@ class BenchmarkScenario(ReloadableBaseModel, BaseSettings):
             {"profile.rate": 20.0, "constraints[0].seconds": 20},
         ],
     )
+    checkpoint_interval: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Seconds between intermediate reports while a strategy is still "
+            "running. Each report includes the requests completed so far and "
+            "the same metrics as the final report. None writes only the final "
+            "report."
+        ),
+        examples=[None, 600],
+    )
 
     @model_validator(mode="before")
     @classmethod
