@@ -585,9 +585,9 @@ class BenchmarkScenario(ReloadableBaseModel, BaseSettings):
         exclude_if=lambda v: v is None,
         description=(
             "Seconds between intermediate reports while a strategy is still "
-            "running. Each report includes the requests completed so far and "
-            "the same metrics as the final report. None writes only the final "
-            "report."
+            "running. Reports use the same compile path as the final report, "
+            "may include warmup requests, and do not include output collectors. "
+            "None writes only the final report."
         ),
         examples=[None, 600],
     )

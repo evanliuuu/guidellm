@@ -98,7 +98,7 @@ guidellm run \
 
 The file is the first JSON or YAML output with `.checkpoint` before the extension. `results/benchmark.json` becomes `results/benchmark.checkpoint.json`. When that output path is a directory, the serialized handler's default name is used first (`benchmarks.json` or `benchmarks.yaml`), and the checkpoint is that name with `.checkpoint` inserted. If the run has no JSON or YAML output, the file is `benchmarks.checkpoint.json` in the default results directory.
 
-Each write replaces the previous checkpoint. The report contains every strategy that has already finished, plus a snapshot of the strategy that is still running. Warmup requests may be counted in that snapshot. The file is left in place after the run finishes. The final report is still written only to the original output path.
+Each write replaces the previous checkpoint. The report contains every strategy that has already finished, plus a snapshot of the strategy that is still running. Checkpoints use the same compile path as the final report, may include warmup requests, and do not run output collectors. The file is left in place after the run finishes. The final report is still written only to the original output path.
 
 ### Controlling Output File Size
 
