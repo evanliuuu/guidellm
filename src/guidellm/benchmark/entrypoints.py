@@ -12,15 +12,16 @@ validation, data preprocessing, profile constraints, and output format specifica
 from __future__ import annotations
 
 import warnings
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 from guidellm.backends import Backend
 from guidellm.benchmark.benchmarker import Benchmarker
 from guidellm.benchmark.outputs import (
     GenerativeBenchmarkerConsole,
     GenerativeBenchmarkerOutput,
+    GenerativeBenchmarkerSerialized,
 )
 from guidellm.benchmark.profiles import Profile, ProfileFactory
 from guidellm.benchmark.progress import (
@@ -59,6 +60,14 @@ from guidellm.schemas.benchmark import (
     OutputFileError,
     ProfileArgs,
 )
+from guidellm.schemas.benchmark.outputs import (
+    CSVBenchmarkOutputArgs,
+    HTMLBenchmarkOutputArgs,
+    JSONBenchmarkOutputArgs,
+    PlotBenchmarkOutputArgs,
+    YAMLBenchmarkOutputArgs,
+)
+from guidellm.settings import settings
 from guidellm.utils.console import Console
 from guidellm.utils.mixins import InfoMixin
 from guidellm.utils.registry import RegistryMixin
@@ -386,6 +395,97 @@ _CONSTRAINT_LIST_FIELDS: frozenset[str] = frozenset(
 )
 
 
+_FileOutputArgs = (
+    JSONBenchmarkOutputArgs
+    | YAMLBenchmarkOutputArgs
+    | CSVBenchmarkOutputArgs
+    | HTMLBenchmarkOutputArgs
+    | PlotBenchmarkOutputArgs
+)
+
+
+def checkpoint_report_path(outputs: list[BenchmarkOutputArgs]) -> Path:
+    """
+    Choose a checkpoint path that is not one of the final report paths.
+
+    JSON or YAML reports get a sibling with ``.checkpoint`` before the
+    extension. A run without those formats gets ``benchmarks.checkpoint.json``
+    beside the first file output, or in the default results directory.
+
+    :param outputs: Output arguments configured for the run
+    :return: Path the intermediate report will overwrite
+    """
+    serialized = next(
+        (
+            args
+            for args in outputs
+            if isinstance(args, JSONBenchmarkOutputArgs | YAMLBenchmarkOutputArgs)
+        ),
+        None,
+    )
+    if serialized is not None:
+        path = serialized.path
+        if path.is_dir():
+            path = path / f"benchmarks.{serialized.kind}"
+        path = path.with_name(f"{path.stem}.checkpoint{path.suffix}")
+    else:
+        directory = settings.default_results_dir
+        for args in outputs:
+            if isinstance(args, _FileOutputArgs):
+                directory = args.path if args.path.is_dir() else args.path.parent
+                break
+        path = directory / "benchmarks.checkpoint.json"
+
+    finals = {
+        args.path
+        for args in outputs
+        if isinstance(args, _FileOutputArgs) and not args.path.is_dir()
+    }
+    while path in finals:
+        path = path.with_name(f"{path.stem}.checkpoint{path.suffix}")
+    return path
+
+
+async def write_checkpoint_report(
+    report: GenerativeBenchmarksReport,
+    outputs: list[BenchmarkOutputArgs],
+) -> Path:
+    """
+    Write one intermediate report with the serialized output handler.
+
+    :param report: Report of the requests completed so far
+    :param outputs: Output arguments used to place the file
+    :return: Path written
+    """
+    path = checkpoint_report_path(outputs)
+    format_type: Literal["json", "yaml"] = (
+        "yaml" if path.suffix.lower() in {".yaml", ".yml"} else "json"
+    )
+    return await GenerativeBenchmarkerSerialized(
+        output_path=path,
+        format_type=format_type,
+    ).finalize(report)
+
+
+def _checkpoint_callback(
+    scenario: BenchmarkScenario,
+    outputs: list[BenchmarkOutputArgs],
+) -> Callable[[GenerativeBenchmark], Awaitable[None]]:
+    """
+    Build the callback that saves the in-progress strategy without stopping it.
+
+    :param scenario: Scenario stored on the report
+    :param outputs: Output arguments used to place the checkpoint file
+    :return: Callback passed to the benchmarker
+    """
+
+    async def on_checkpoint(benchmark: GenerativeBenchmark) -> None:
+        report = GenerativeBenchmarksReport(config=scenario, benchmarks=[benchmark])
+        await write_checkpoint_report(report, outputs)
+
+    return on_checkpoint
+
+
 async def _finalize_outputs(
     report: GenerativeBenchmarksReport,
     pairs: Iterable[tuple[BenchmarkOutputArgs, GenerativeBenchmarkerOutput]],
@@ -637,6 +737,11 @@ async def benchmark_generative_text(  # noqa: C901
     benchmarker: Benchmarker[
         GenerativeBenchmark, GenerationRequest, GenerationResponse
     ] = Benchmarker()
+    on_checkpoint = (
+        _checkpoint_callback(args, benchmark_args.outputs)
+        if args.checkpoint_interval is not None
+        else None
+    )
     try:
         async for benchmark in benchmarker.run(
             accumulator_class=GenerativeBenchmarkAccumulator,
@@ -654,6 +759,8 @@ async def benchmark_generative_text(  # noqa: C901
             confidence=metrics_args.confidence,
             warnings=metrics_args.warnings,
             collectors=collectors,
+            checkpoint_interval=args.checkpoint_interval,
+            on_checkpoint=on_checkpoint,
         ):
             # Completed benchmark
             if benchmark:

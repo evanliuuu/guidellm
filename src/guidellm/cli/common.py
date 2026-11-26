@@ -25,6 +25,17 @@ def common_run_options(func: Callable[..., Any]) -> Callable[..., Any]:
 
     # Apply options in reverse help order to preserve the existing ``run`` CLI.
     @click.option(
+        "--checkpoint-interval",
+        type=click.FloatRange(min=0, min_open=True),
+        default=None,
+        help=(
+            "Write an intermediate report every N seconds while a strategy is "
+            "running. The file sits next to the JSON or YAML output, with "
+            "'.checkpoint' before the extension, and is overwritten each "
+            "interval. Unset writes only the final report."
+        ),
+    )
+    @click.option(
         "--disable-console-interactive",
         "--disable-progress",  # legacy alias
         "disable_console_interactive",

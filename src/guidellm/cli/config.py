@@ -37,12 +37,17 @@ def config(output: LazyFile, **kwargs) -> None:
     kwargs.pop("disable_console", None)
     kwargs.pop("disable_console_interactive", None)
 
+    scenario_kwargs = {}
+    if "checkpoint_interval" in kwargs:
+        scenario_kwargs["checkpoint_interval"] = kwargs["checkpoint_interval"]
+
     try:
         args = BenchmarkScenario.create(
             spec=kwargs.get("spec", {}),
             benchmarks=kwargs.get("benchmarks") or BLANK,
             metadata={"labels": dict(kwargs.get("labels", []))},
             scenario=kwargs.get("config"),
+            **scenario_kwargs,
         )
     except ValidationError as err:
         raise format_validation_errors(ctx, err, base_class=BenchmarkScenario) from err
