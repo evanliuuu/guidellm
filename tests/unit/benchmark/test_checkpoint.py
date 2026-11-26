@@ -24,6 +24,8 @@ from guidellm.benchmark.schemas import (
     GenerativeBenchmark,
     GenerativeBenchmarkAccumulator,
     GenerativeBenchmarksReport,
+    GenerativeBenchmarkTimings,
+    GenerativeMetrics,
 )
 from guidellm.logger import logger
 from guidellm.scheduler import SchedulerState, SynchronousStrategy
@@ -111,6 +113,23 @@ def _config() -> BenchmarkConfig:
 
 def _accumulator() -> GenerativeBenchmarkAccumulator:
     return GenerativeBenchmarkAccumulator(config=_config())
+
+
+def _in_progress(accumulator: GenerativeBenchmarkAccumulator) -> SchedulerState:
+    """Apply one in-flight update. Measurement has started and has not ended."""
+    info = RequestInfo(
+        request_id="inflight",
+        status="in_progress",
+        timings=RequestTimings(resolve_start=1000.2, request_start=1000.2),
+    )
+    state = SchedulerState(start_time=1000.0, start_requests_time=1000.0)
+    accumulator.update_estimate(
+        GenerationResponse(request_id="inflight", request_args=""),
+        GenerationRequest(request_id="inflight"),
+        info,
+        state,
+    )
+    return state
 
 
 def _ready_pair():
@@ -361,6 +380,77 @@ async def test_missing_measurement_window_is_logged_at_debug(checkpoint_rig):
     assert rig.recorded == []
     skips = [record for record in records if "no measurement window yet" in record]
     assert len(skips) == 2
+
+
+@pytest.mark.regression
+def test_has_measurement_window_requires_both_bounds():
+    """A window exists only when both the start and the end have been observed.
+
+    ## WRITTEN BY AI ##
+    """
+    neither = GenerativeBenchmarkTimings()
+    assert neither.finalized_measure_start == -1.0
+    assert neither.finalized_measure_end == -1.0
+    assert neither.has_measurement_window() is False
+
+    start_only = GenerativeBenchmarkTimings(measure_start=1000.0, request_start=1000.0)
+    assert start_only.finalized_measure_start == 1000.0
+    assert start_only.finalized_measure_end == -1.0
+    assert start_only.has_measurement_window() is False
+
+    end_only = GenerativeBenchmarkTimings(current_request=1001.0)
+    assert end_only.finalized_measure_start == -1.0
+    assert end_only.finalized_measure_end == 1001.0
+    assert end_only.has_measurement_window() is False
+
+    both = GenerativeBenchmarkTimings(
+        measure_start=1000.0, measure_end=1001.0, request_start=1000.0
+    )
+    assert both.has_measurement_window() is True
+
+
+@pytest.mark.regression
+def test_metrics_compile_rejects_a_one_sided_window():
+    """Compilation refuses a window that has a start and no end, or the reverse.
+
+    ## WRITTEN BY AI ##
+    """
+    started = _accumulator()
+    _in_progress(started)
+    with pytest.raises(ValueError, match="No measurement start or end"):
+        GenerativeMetrics.compile(started)
+
+    ended = _accumulator()
+    ended.timings.current_request = 1001.0
+    assert ended.timings.finalized_measure_start == -1.0
+    assert ended.timings.finalized_measure_end == 1001.0
+    with pytest.raises(ValueError, match="No measurement start or end"):
+        GenerativeMetrics.compile(ended)
+
+
+@pytest.mark.regression
+@pytest.mark.asyncio
+async def test_in_progress_request_does_not_checkpoint(checkpoint_rig):
+    """An in-flight request has a start and no end, so it does not write.
+
+    ## WRITTEN BY AI ##
+    """
+    errors: list[str] = []
+    sink = logger.add(lambda message: errors.append(str(message)), level="ERROR")
+    accumulator = _accumulator()
+    state = _in_progress(accumulator)
+    assert accumulator.timings.finalized_measure_start == 1000.0
+    assert accumulator.timings.finalized_measure_end == -1.0
+    rig = checkpoint_rig
+    try:
+        await rig.tracker.on_benchmark_start(SynchronousStrategy())
+        rig.clock["now"] = 10.0
+        await rig.tracker.on_benchmark_update(accumulator, state)
+    finally:
+        logger.remove(sink)
+
+    assert rig.recorded == []
+    assert errors == []
 
 
 @pytest.mark.regression
