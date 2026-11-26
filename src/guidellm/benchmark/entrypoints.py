@@ -409,7 +409,8 @@ def _append_checkpoint_tracker(
     trackers.append(
         GenerativeCheckpointBenchmarkerProgress(
             args.checkpoint_interval,
-            resolve_checkpoint_writer(outputs, args),
+            resolve_checkpoint_writer(outputs),
+            args,
         )
     )
 

@@ -39,20 +39,13 @@ class CheckpointReportWriter:
     moved into place, so a failed write leaves the previous checkpoint as it was.
     """
 
-    def __init__(
-        self,
-        path: Path,
-        format_type: Literal["json", "yaml"],
-        scenario: BenchmarkScenario,
-    ) -> None:
+    def __init__(self, path: Path, format_type: Literal["json", "yaml"]) -> None:
         """
         :param path: Checkpoint file to replace
         :param format_type: Serialization format for the report
-        :param scenario: Scenario stored on every checkpoint report
         """
         self.path = path
         self.format_type = format_type
-        self.scenario = scenario
 
     async def write(self, report: GenerativeBenchmarksReport) -> Path:
         """
@@ -75,7 +68,6 @@ class CheckpointReportWriter:
 
 def resolve_checkpoint_writer(
     outputs: list[BenchmarkOutputArgs],
-    scenario: BenchmarkScenario,
 ) -> CheckpointReportWriter:
     """
     Choose the checkpoint file for this run.
@@ -86,21 +78,17 @@ def resolve_checkpoint_writer(
     default results directory.
 
     :param outputs: Output arguments configured for the run
-    :param scenario: Scenario stored on every checkpoint report
     :return: Writer that replaces the checkpoint file
     """
     for args in outputs:
         if isinstance(args, JSONBenchmarkOutputArgs | YAMLBenchmarkOutputArgs):
-            final = GenerativeBenchmarkerSerialized.from_args(args).output_file()
+            handler = GenerativeBenchmarkerSerialized.from_args(args)
+            final = handler.output_file()
             path = final.with_name(f"{final.stem}.checkpoint{final.suffix}")
-            format_type: Literal["json", "yaml"] = (
-                "yaml" if path.suffix.lower() in {".yaml", ".yml"} else "json"
-            )
-            return CheckpointReportWriter(path, format_type, scenario)
+            return CheckpointReportWriter(path, handler.format_type)
     return CheckpointReportWriter(
         settings.default_results_dir / "benchmarks.checkpoint.json",
         "json",
-        scenario,
     )
 
 
@@ -114,16 +102,22 @@ class GenerativeCheckpointBenchmarkerProgress(
     strategy that has already finished and a compile of the one still running.
     """
 
-    def __init__(self, interval: float, writer: CheckpointReportWriter) -> None:
+    def __init__(
+        self,
+        interval: float,
+        writer: CheckpointReportWriter,
+        scenario: BenchmarkScenario,
+    ) -> None:
         """
         :param interval: Seconds to wait after a strategy starts, and between
             later checkpoints
         :param writer: Replaces the checkpoint file
+        :param scenario: Scenario stored on every checkpoint report
         """
         super().__init__()
         self.interval = interval
         self._writer = writer
-        self._scenario = writer.scenario
+        self._scenario = scenario
         self._completed: list[GenerativeBenchmark] = []
         self._checkpoint_at = 0.0
 
@@ -154,8 +148,10 @@ class GenerativeCheckpointBenchmarkerProgress(
         :param accumulator: Requests completed so far for the running strategy
         :param scheduler_state: Scheduler state for the request just applied
         """
-        if monotonic() - self._checkpoint_at < self.interval:
+        now = monotonic()
+        if now - self._checkpoint_at < self.interval:
             return
+        self._checkpoint_at = now
         try:
             snapshot = GenerativeBenchmark.compile(
                 accumulator=accumulator,
@@ -168,8 +164,10 @@ class GenerativeCheckpointBenchmarkerProgress(
             config=self._scenario,
             benchmarks=[*self._completed, snapshot],
         )
-        await self._writer.write(report)
-        self._checkpoint_at = monotonic()
+        try:
+            await self._writer.write(report)
+        except OSError as err:
+            logger.warning("Failed to write checkpoint report: {}", err)
 
     async def on_benchmark_complete(self, benchmark: GenerativeBenchmark) -> None:
         """
