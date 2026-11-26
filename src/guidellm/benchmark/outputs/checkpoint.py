@@ -60,7 +60,7 @@ class CheckpointReportWriter:
         try:
             report.save_file(temporary, type_=self.format_type)
             os.replace(temporary, self.path)  # noqa: PTH105
-        except Exception:
+        except BaseException:
             temporary.unlink(missing_ok=True)
             raise
         return self.path
@@ -152,14 +152,13 @@ class GenerativeCheckpointBenchmarkerProgress(
         if now - self._checkpoint_at < self.interval:
             return
         self._checkpoint_at = now
-        try:
-            snapshot = GenerativeBenchmark.compile(
-                accumulator=accumulator,
-                scheduler_state=scheduler_state,
-            )
-        except ValueError as err:
-            logger.debug("Checkpoint skipped, no measurement window yet: {}", err)
+        if not accumulator.timings.has_measurement_window():
+            logger.debug("Checkpoint skipped, no measurement window yet")
             return
+        snapshot = GenerativeBenchmark.compile(
+            accumulator=accumulator,
+            scheduler_state=scheduler_state,
+        )
         report = GenerativeBenchmarksReport(
             config=self._scenario,
             benchmarks=[*self._completed, snapshot],
