@@ -29,10 +29,13 @@ def common_run_options(func: Callable[..., Any]) -> Callable[..., Any]:
         type=click.FloatRange(min=0, min_open=True),
         default=None,
         help=(
-            "Write an intermediate report every N seconds while a strategy is "
-            "running. The file sits next to the JSON or YAML output, with "
-            "'.checkpoint' before the extension, and is overwritten each "
-            "interval. Unset writes only the final report."
+            "Seconds between intermediate reports while a strategy is running. "
+            "The report is written on the next request update. The file is the "
+            "JSON or YAML output with '.checkpoint' before the extension, or "
+            "benchmarks.checkpoint.json in the default results directory. It "
+            "includes finished strategies and the one still running, replaces "
+            "the previous checkpoint, and is kept after the run. Unset writes "
+            "only the final report."
         ),
     )
     @click.option(

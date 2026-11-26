@@ -92,6 +92,14 @@ guidellm run \
   --output kind=json,path=results/benchmark.json
 ```
 
+## Intermediate (checkpoint) reports
+
+`--checkpoint-interval <seconds>` writes an intermediate report while a strategy is still running. The interval is measured from the start of that strategy. The report is written on the next request update after the interval elapses, and again after each later interval. A stalled server that sends no updates produces no checkpoint, so a very small interval does not sample the server between updates.
+
+The file is the first JSON or YAML output with `.checkpoint` before the extension. `results/benchmark.json` becomes `results/benchmark.checkpoint.json`. When that output path is a directory, the serialized handler's default name is used first (`benchmarks.json` or `benchmarks.yaml`), and the checkpoint is that name with `.checkpoint` inserted. If the run has no JSON or YAML output, the file is `benchmarks.checkpoint.json` in the default results directory.
+
+Each write replaces the previous checkpoint. The report contains every strategy that has already finished, plus a snapshot of the strategy that is still running, with the same metrics as the final report. The file is left in place after the run finishes. The final report is still written only to the original output path.
+
 ### Controlling Output File Size
 
 Long benchmark runs with thousands of requests can produce large JSON and YAML output files because, by default, every request's full data (prompt text, output text, tool calls) is retained. The `--metrics` option lets you limit how much request data is kept using reservoir sampling, while lightweight stats (latency, token counts, timing) are always preserved for every request.

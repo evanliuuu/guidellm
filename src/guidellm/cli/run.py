@@ -68,17 +68,13 @@ def run(**kwargs):
                 status="warning",
             )
 
-    scenario_kwargs = {}
-    if "checkpoint_interval" in kwargs:
-        scenario_kwargs["checkpoint_interval"] = kwargs["checkpoint_interval"]
-
     try:
         args = BenchmarkScenario.create(
             spec=kwargs.get("spec", {}),
             benchmarks=kwargs.get("benchmarks") or BLANK,
             metadata={"labels": dict(kwargs.get("labels", []))},
             scenario=kwargs.get("config"),
-            **scenario_kwargs,
+            checkpoint_interval=kwargs.get("checkpoint_interval", BLANK),
         )
     except ValidationError as err:
         # Translate pydantic validation error to click argument error
