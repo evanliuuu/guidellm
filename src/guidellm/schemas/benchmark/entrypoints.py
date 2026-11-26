@@ -581,6 +581,8 @@ class BenchmarkScenario(ReloadableBaseModel, BaseSettings):
     checkpoint_interval: float | None = Field(
         default=None,
         gt=0,
+        allow_inf_nan=False,
+        exclude_if=lambda v: v is None,
         description=(
             "Seconds between intermediate reports while a strategy is still "
             "running. Each report includes the requests completed so far and "
