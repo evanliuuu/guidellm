@@ -14,8 +14,7 @@ import asyncio
 import threading
 import uuid
 from abc import ABC
-from collections.abc import AsyncIterator, Awaitable, Callable
-from time import monotonic
+from collections.abc import AsyncIterator
 from typing import Generic
 
 from guidellm.benchmark.profiles import Profile
@@ -35,7 +34,6 @@ from guidellm.scheduler import (
     RequestT,
     ResponseT,
     Scheduler,
-    SchedulerState,
     SchedulingStrategy,
     prefetch_requests,
 )
@@ -81,8 +79,6 @@ class Benchmarker(
         confidence: float | None = 0.95,
         warnings: list[WarningRuleArgs] | None = None,
         collectors: CollectorProcess | None = None,
-        checkpoint_interval: float | None = None,
-        on_checkpoint: Callable[[BenchmarkT], Awaitable[None]] | None = None,
     ) -> AsyncIterator[BenchmarkT]:
         """
         Execute benchmark runs across scheduling strategies in the profile.
@@ -108,11 +104,6 @@ class Benchmarker(
         :param warnings: Post-benchmark warning checks. None uses the defaults.
         :param collectors: Started collector process, told when each benchmark
             starts and stops, whose results are added to each benchmark
-        :param checkpoint_interval: Seconds between intermediate compiles of the
-            requests completed so far, or None to compile only when the strategy
-            finishes
-        :param on_checkpoint: Called with each intermediate compile. The running
-            accumulator is left in place
         :yield: Compiled benchmark result for each strategy execution
         :raises Exception: If benchmark execution or compilation fails
         """
@@ -171,7 +162,6 @@ class Benchmarker(
                 )
                 accumulator = accumulator_class(config=config)
                 scheduler_state = None
-                checkpoint_at = monotonic()
                 scheduler: Scheduler[RequestT, ResponseT] = Scheduler()
 
                 if collectors:
@@ -202,15 +192,6 @@ class Benchmarker(
                         except Exception as err:  # noqa: BLE001
                             logger.error(
                                 "Error updating benchmark estimate/progress: {}", err
-                            )
-                        else:
-                            checkpoint_at = await self._emit_checkpoint(
-                                interval=checkpoint_interval,
-                                callback=on_checkpoint,
-                                accumulator=accumulator,
-                                benchmark_class=benchmark_class,
-                                scheduler_state=scheduler_state,
-                                checkpoint_at=checkpoint_at,
                             )
                 finally:
                     if collectors:
@@ -243,50 +224,3 @@ class Benchmarker(
 
             logger.info("All benchmarks finalized")
             await progress.on_finalize()
-
-    async def _emit_checkpoint(
-        self,
-        *,
-        interval: float | None,
-        callback: Callable[[BenchmarkT], Awaitable[None]] | None,
-        accumulator: BenchmarkAccumulatorT,
-        benchmark_class: type[BenchmarkT],
-        scheduler_state: SchedulerState | None,
-        checkpoint_at: float,
-    ) -> float:
-        """
-        Compile the requests finished so far and hand that snapshot to the callback.
-
-        The accumulator is only read. A compile that is not ready yet keeps the
-        previous timestamp so the next completed request tries again. A callback
-        failure is logged and the strategy keeps running.
-
-        :param interval: Seconds to wait between snapshots, or None to skip
-        :param callback: Receives the compiled snapshot
-        :param accumulator: Live per-strategy accumulator
-        :param benchmark_class: Class used for the final compile
-        :param scheduler_state: Scheduler state for the request just applied
-        :param checkpoint_at: Monotonic time of the last snapshot, or strategy start
-        :return: Monotonic time to measure the next interval from
-        """
-        if (
-            interval is None
-            or callback is None
-            or scheduler_state is None
-            or monotonic() - checkpoint_at < interval
-        ):
-            return checkpoint_at
-
-        try:
-            snapshot = benchmark_class.compile(
-                accumulator=accumulator,
-                scheduler_state=scheduler_state,
-            )
-        except ValueError:
-            return checkpoint_at
-
-        try:
-            await callback(snapshot)
-        except Exception as err:  # noqa: BLE001
-            logger.error("Failed to write checkpoint report: {}", err)
-        return monotonic()

@@ -1,24 +1,31 @@
-"""Intermediate reports while one strategy is still running."""
+"""Intermediate reports while strategies are still running."""
 
+import asyncio
 from pathlib import Path
-from typing import NamedTuple
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
-import click
 import pytest
+import yaml
 from click.testing import CliRunner
+from pydantic import ValidationError
 
+import guidellm.entrypoints as text_entry
 from guidellm.__main__ import cli
 from guidellm.benchmark import benchmarker as benchmarker_module
-from guidellm.benchmark.entrypoints import (
-    checkpoint_report_path,
-    write_checkpoint_report,
+from guidellm.benchmark import entrypoints as entrypoints_module
+from guidellm.benchmark.outputs import checkpoint as checkpoint_module
+from guidellm.benchmark.outputs.checkpoint import (
+    CheckpointReportWriter,
+    GenerativeCheckpointBenchmarkerProgress,
+    resolve_checkpoint_writer,
 )
 from guidellm.benchmark.schemas import (
+    BenchmarkConfig,
     GenerativeBenchmark,
     GenerativeBenchmarkAccumulator,
     GenerativeBenchmarksReport,
 )
+from guidellm.logger import logger
 from guidellm.scheduler import SchedulerState, SynchronousStrategy
 from guidellm.schemas import (
     GenerationRequest,
@@ -31,21 +38,20 @@ from guidellm.schemas.benchmark import BenchmarkScenario
 from guidellm.schemas.benchmark.outputs import (
     CSVBenchmarkOutputArgs,
     JSONBenchmarkOutputArgs,
+    YAMLBenchmarkOutputArgs,
 )
-from guidellm.schemas.benchmark.transient import TransientPhaseConfig
+from guidellm.settings import settings
 
 
-def _scenario(path: Path) -> BenchmarkScenario:
-    return BenchmarkScenario(
-        spec={  # type: ignore[arg-type]
-            "backend": {"kind": "openai_http", "target": "http://localhost:9"},
-            "profile": {"kind": "synchronous"},
-            "data": [
-                {"kind": "synthetic_text", "prompt_tokens": 8, "output_tokens": 4}
-            ],
-            "outputs": [{"kind": "json", "path": str(path)}],
-        }
-    )
+def _scenario(**kwargs) -> BenchmarkScenario:
+    spec = {
+        "backend": {"kind": "openai_http", "target": "http://localhost:9"},
+        "profile": {"kind": "synchronous"},
+        "data": [{"kind": "synthetic_text", "prompt_tokens": 8, "output_tokens": 4}],
+        "metrics": {"kind": "generative", "warnings": []},
+    }
+    spec.update(kwargs.pop("spec_updates", {}))
+    return BenchmarkScenario(spec=spec, **kwargs)  # type: ignore[arg-type]
 
 
 def _completed(index: int):
@@ -78,218 +84,328 @@ def _completed(index: int):
     state = SchedulerState(
         start_time=1000.0,
         start_requests_time=1000.0,
-        successful_requests=index + 1,
-        processed_requests=index + 1,
+        successful_requests=1,
+        processed_requests=1,
     )
     return response, request, info, state
 
 
-def _in_progress(request_id: str):
-    timings = RequestTimings(resolve_start=1000.2, request_start=1000.2)
-    info = RequestInfo(request_id=request_id, status="in_progress", timings=timings)
-    request = GenerationRequest(request_id=request_id)
-    response = GenerationResponse(request_id=request_id, request_args="")
-    state = SchedulerState(start_time=1000.0, start_requests_time=1000.0)
-    return response, request, info, state
+def _ids(benchmark: GenerativeBenchmark) -> list[str]:
+    return [stats.request_id for stats in benchmark.requests.successful or []]
 
 
-class _View(NamedTuple):
-    ids: list[str]
-    completed: int
-    latency_mean: float
-    latency_p50: float
-    ttft_mean: float
-    itl_mean: float
-    throughput_mean: float
+@pytest.mark.sanity
+@pytest.mark.asyncio
+async def test_run_checkpoint_keeps_finished_strategies(monkeypatch, tmp_path: Path):
+    """A two-strategy run checkpoints the finished strategy plus the live one.
 
-
-def _observable(benchmark: GenerativeBenchmark) -> _View:
-    latency = benchmark.metrics.request_latency.successful
-    ttft_mean = benchmark.metrics.time_to_first_token_ms.successful.mean
-    itl_mean = benchmark.metrics.inter_token_latency_ms.successful.mean
-    throughput_mean = benchmark.metrics.requests_per_second.successful.mean
-    assert latency.mean is not None
-    assert ttft_mean is not None
-    assert itl_mean is not None
-    assert throughput_mean is not None
-    return _View(
-        ids=[stats.request_id for stats in benchmark.requests.successful or []],
-        completed=latency.count,
-        latency_mean=latency.mean,
-        latency_p50=latency.percentiles.p50,
-        ttft_mean=ttft_mean,
-        itl_mean=itl_mean,
-        throughput_mean=throughput_mean,
-    )
-
-
-async def _run(monkeypatch, *, interval: float | None, on_checkpoint):
-    clock = {"now": 1000.0}
-    monkeypatch.setattr(benchmarker_module, "monotonic", lambda: clock["now"])
+    ## WRITTEN BY AI ##
+    """
+    final_path = tmp_path / "results.json"
+    clock = {"now": 0.0}
+    count = {"n": 0}
+    monkeypatch.setattr(checkpoint_module, "monotonic", lambda: clock["now"])
     monkeypatch.setattr(
         benchmarker_module.InfoMixin, "extract_from_obj", lambda _obj: {}
     )
     monkeypatch.setattr(benchmarker_module, "prefetch_requests", lambda *_a, **_k: [])
 
-    strategy = SynchronousStrategy()
-
-    def strategies():
-        yield strategy, {}
-
-    profile = Mock(completed_strategies=[])
-    profile.strategies_generator.side_effect = strategies
-
-    updates = [
-        ("completed", 0, 10.0),
-        ("completed", 1, 10.0),
-        ("in_progress", "still-running", 16.0),
-        ("completed", 2, 14.0),
-        ("completed", 3, 16.0),
-    ]
-
     async def schedule(**_kwargs):
-        for kind, index, step in updates:
-            clock["now"] += step
-            if kind == "completed":
-                yield _completed(index)
-            else:
-                yield _in_progress(str(index))
+        clock["now"] += 20.0
+        index = count["n"]
+        count["n"] += 1
+        yield _completed(index)
 
     monkeypatch.setattr(
         benchmarker_module, "Scheduler", Mock(return_value=Mock(run=schedule))
     )
-    progress = Mock()
-    progress.on_initialize = AsyncMock()
-    progress.on_benchmark_start = AsyncMock()
-    progress.on_benchmark_update = AsyncMock()
-    progress.on_benchmark_compile = AsyncMock()
-    progress.on_benchmark_complete = AsyncMock()
-    progress.on_finalize = AsyncMock()
+    monkeypatch.setattr(
+        entrypoints_module,
+        "resolve_backend",
+        AsyncMock(return_value=(MagicMock(), "model")),
+    )
+    monkeypatch.setattr(entrypoints_module, "resolve_tokenizer", AsyncMock())
+    monkeypatch.setattr(
+        entrypoints_module, "create_data_loader", AsyncMock(return_value=[])
+    )
 
-    return [
-        benchmark
-        async for benchmark in benchmarker_module.Benchmarker().run(
-            accumulator_class=GenerativeBenchmarkAccumulator,
-            benchmark_class=GenerativeBenchmark,
-            requests=[],
-            backend=Mock(),
-            profile=profile,
-            environment=Mock(),
-            warmup=TransientPhaseConfig(),
-            cooldown=TransientPhaseConfig(),
-            progress=progress,
-            warnings=[],
-            checkpoint_interval=interval,
-            on_checkpoint=on_checkpoint,
-        )
+    scenario = _scenario(
+        checkpoint_interval=15.0,
+        spec_updates={
+            "profile": {"kind": "concurrent", "streams": [1, 2]},
+            "outputs": [{"kind": "json", "path": str(final_path)}],
+        },
+    )
+    report, _outputs = await entrypoints_module.benchmark_generative_text(
+        args=scenario,
+        progress=False,
+        console=None,
+    )
+
+    checkpoint = tmp_path / "results.checkpoint.json"
+    loaded = GenerativeBenchmarksReport.load_file(checkpoint)
+    assert [benchmark.config.strategy.streams for benchmark in loaded.benchmarks] == [
+        1,
+        2,
     ]
+    assert [_ids(benchmark) for benchmark in loaded.benchmarks] == [
+        ["req-0"],
+        ["req-1"],
+    ]
+    assert len(report.benchmarks) == 2
+    assert checkpoint != final_path
+    assert final_path.exists()
+
+    count["n"] = 0
+    clock["now"] = 0.0
+    absent = tmp_path / "absent.json"
+    quiet = _scenario(
+        spec_updates={
+            "profile": {"kind": "concurrent", "streams": [1, 2]},
+            "outputs": [{"kind": "json", "path": str(absent)}],
+        }
+    )
+    await entrypoints_module.benchmark_generative_text(
+        args=quiet,
+        progress=False,
+        console=None,
+    )
+    assert not (tmp_path / "absent.checkpoint.json").exists()
 
 
-@pytest.mark.sanity
+@pytest.mark.regression
+def test_failed_checkpoint_write_keeps_the_previous_file(monkeypatch, tmp_path: Path):
+    """A write that fails before replace leaves the last checkpoint unchanged.
+
+    ## WRITTEN BY AI ##
+    """
+    path = tmp_path / "benchmarks.checkpoint.json"
+    path.write_text("previous", encoding="utf-8")
+    writer = CheckpointReportWriter(path, "json", _scenario())
+
+    def fail(self, destination, type_):
+        Path(destination).write_text("partial", encoding="utf-8")
+        raise OSError(f"disk full writing {type_}")
+
+    monkeypatch.setattr(GenerativeBenchmarksReport, "save_file", fail)
+    with pytest.raises(OSError, match="disk full"):
+        asyncio.run(writer.write(GenerativeBenchmarksReport(config=writer.scenario)))
+
+    assert path.read_text(encoding="utf-8") == "previous"
+    assert list(tmp_path.glob(".benchmarks.checkpoint.json.*.tmp")) == []
+
+
+@pytest.mark.regression
+def test_checkpoint_path_uses_serialized_output_or_the_default_dir(tmp_path: Path):
+    """JSON and YAML paths gain a checkpoint suffix. Anything else uses the default.
+
+    ## WRITTEN BY AI ##
+    """
+    scenario = _scenario()
+    json_path = tmp_path / "run" / "results.json"
+    writer = resolve_checkpoint_writer(
+        [
+            CSVBenchmarkOutputArgs(path=tmp_path / "run" / "results.csv"),
+            JSONBenchmarkOutputArgs(path=json_path),
+        ],
+        scenario,
+    )
+    assert writer.path == tmp_path / "run" / "results.checkpoint.json"
+
+    directory = tmp_path / "reports"
+    directory.mkdir()
+    yaml_writer = resolve_checkpoint_writer(
+        [YAMLBenchmarkOutputArgs(path=directory)],
+        scenario,
+    )
+    assert yaml_writer.path == directory / "benchmarks.checkpoint.yaml"
+
+    original = settings.default_results_dir
+    settings.default_results_dir = tmp_path / "default"
+    try:
+        fallback = resolve_checkpoint_writer(
+            [CSVBenchmarkOutputArgs(path=tmp_path / "only.csv")],
+            scenario,
+        )
+    finally:
+        settings.default_results_dir = original
+    assert fallback.path == tmp_path / "default" / "benchmarks.checkpoint.json"
+
+
+@pytest.mark.regression
 @pytest.mark.asyncio
-async def test_checkpoints_snapshot_completed_requests_without_resetting(
+async def test_checkpoint_clock_resets_when_the_next_strategy_starts(
     monkeypatch, tmp_path: Path
 ):
-    """Emit interval snapshots of finished requests and leave the final run intact.
+    """A new strategy waits out its own interval before the next checkpoint.
 
     ## WRITTEN BY AI ##
     """
-    final_path = tmp_path / "benchmarks.json"
-    final_path.write_text("final-report", encoding="utf-8")
-    scenario = _scenario(final_path)
-    outputs = scenario.spec.outputs
-    snapshots: list[_View] = []
+    clock = {"now": 0.0}
+    monkeypatch.setattr(checkpoint_module, "monotonic", lambda: clock["now"])
+    written: list[int] = []
+    writer = CheckpointReportWriter(
+        tmp_path / "benchmarks.checkpoint.json", "json", _scenario()
+    )
 
-    async def on_checkpoint(benchmark: GenerativeBenchmark) -> None:
-        report = GenerativeBenchmarksReport(config=scenario, benchmarks=[benchmark])
-        written = await write_checkpoint_report(report, outputs)
-        loaded = GenerativeBenchmarksReport.load_file(written)
-        assert written != final_path
-        assert written.name == "benchmarks.checkpoint.json"
-        assert len(loaded.benchmarks) == 1
-        snapshots.append(_observable(loaded.benchmarks[0]))
+    async def record(report: GenerativeBenchmarksReport) -> Path:
+        written.append(len(report.benchmarks))
+        return writer.path
 
-    results = await _run(monkeypatch, interval=15.0, on_checkpoint=on_checkpoint)
-    plain = await _run(monkeypatch, interval=None, on_checkpoint=None)
+    monkeypatch.setattr(writer, "write", record)
+    tracker = GenerativeCheckpointBenchmarkerProgress(15.0, writer)
+    config = BenchmarkConfig(
+        run_id="checkpoint",
+        run_index=0,
+        strategy=SynchronousStrategy(),
+        constraints={},
+        profile={},
+        requests={},
+        backend={},
+        environment={},
+        warnings=[],
+    )
+    accumulator = GenerativeBenchmarkAccumulator(config=config)
+    response, request, info, state = _completed(0)
+    accumulator.update_estimate(response, request, info, state)
+    finished = GenerativeBenchmark.compile(
+        accumulator=accumulator, scheduler_state=state
+    )
 
-    assert [item.ids for item in snapshots] == [
-        ["req-0", "req-1"],
-        ["req-0", "req-1"],
-        ["req-0", "req-1", "req-2", "req-3"],
-    ]
-    assert all(item.completed == len(item.ids) for item in snapshots)
-    assert all("still-running" not in item.ids for item in snapshots)
-    for item in snapshots:
-        assert item.ttft_mean == pytest.approx(70.0)
-        assert item.itl_mean == pytest.approx(200.0 / 3.0)
-        assert item.latency_mean == pytest.approx(0.28)
-        assert item.latency_p50 == pytest.approx(0.28)
-        assert item.throughput_mean > 0
+    await tracker.on_benchmark_start(SynchronousStrategy())
+    clock["now"] = 20.0
+    await tracker.on_benchmark_update(accumulator, state)
+    await tracker.on_benchmark_complete(finished)
+    clock["now"] = 100.0
+    await tracker.on_benchmark_start(SynchronousStrategy())
+    clock["now"] = 110.0
+    await tracker.on_benchmark_update(accumulator, state)
+    clock["now"] = 120.0
+    await tracker.on_benchmark_update(accumulator, state)
 
-    assert len(results) == len(plain) == 1
-    finished = _observable(results[0])
-    assert finished == _observable(plain[0])
-    assert finished.ids == ["req-0", "req-1", "req-2", "req-3"]
-    assert final_path.read_text(encoding="utf-8") == "final-report"
+    assert written == [1, 2]
 
 
 @pytest.mark.regression
 @pytest.mark.asyncio
-async def test_checkpoint_interval_defaults_off(monkeypatch):
-    """No interval means no checkpoint file and the run still completes.
+async def test_missing_measurement_window_is_logged_at_debug(
+    monkeypatch, tmp_path: Path
+):
+    """A compile with no measurement window is logged and does not write.
 
     ## WRITTEN BY AI ##
     """
-    called = False
-
-    async def on_checkpoint(_benchmark: GenerativeBenchmark) -> None:
-        nonlocal called
-        called = True
-
-    results = await _run(monkeypatch, interval=None, on_checkpoint=on_checkpoint)
-    assert results[0].requests.successful is not None
-    assert len(results[0].requests.successful) == 4
-    assert called is False
-    assert BenchmarkScenario.model_fields["checkpoint_interval"].default is None
-
-
-@pytest.mark.regression
-def test_checkpoint_file_follows_json_output_and_not_the_final_path(tmp_path: Path):
-    """The checkpoint is a sibling of the serialized report, never that report.
-
-    ## WRITTEN BY AI ##
-    """
-    json_path = tmp_path / "run" / "results.json"
-    csv_path = tmp_path / "run" / "results.csv"
-    path = checkpoint_report_path(
-        [
-            CSVBenchmarkOutputArgs(path=csv_path),
-            JSONBenchmarkOutputArgs(path=json_path),
-        ]
+    clock = {"now": 0.0}
+    monkeypatch.setattr(checkpoint_module, "monotonic", lambda: clock["now"])
+    records: list[str] = []
+    sink = logger.add(lambda message: records.append(str(message)), level="DEBUG")
+    writer = CheckpointReportWriter(
+        tmp_path / "benchmarks.checkpoint.json", "json", _scenario()
     )
-    assert path == tmp_path / "run" / "results.checkpoint.json"
-    assert path != json_path
-    assert path != csv_path
+    called = {"write": False}
+
+    async def record(_report):
+        called["write"] = True
+        return writer.path
+
+    monkeypatch.setattr(writer, "write", record)
+    tracker = GenerativeCheckpointBenchmarkerProgress(15.0, writer)
+    accumulator = GenerativeBenchmarkAccumulator(
+        config=BenchmarkConfig(
+            run_id="checkpoint",
+            run_index=0,
+            strategy=SynchronousStrategy(),
+            constraints={},
+            profile={},
+            requests={},
+            backend={},
+            environment={},
+            warnings=[],
+        )
+    )
+    try:
+        await tracker.on_benchmark_start(SynchronousStrategy())
+        clock["now"] = 20.0
+        await tracker.on_benchmark_update(accumulator, SchedulerState())
+    finally:
+        logger.remove(sink)
+
+    assert called["write"] is False
+    assert any("no measurement window yet" in record for record in records)
 
 
 @pytest.mark.regression
-def test_run_checkpoint_interval_round_trips_through_config(tmp_path: Path):
-    """The flag is shared by run and config and stays unset unless given.
+@pytest.mark.parametrize("value", [0, -1])
+def test_checkpoint_interval_rejects_non_positive(value: int):
+    """Zero and negative intervals are rejected by the scenario field.
 
     ## WRITTEN BY AI ##
     """
-    assert "--checkpoint-interval" in {
-        option
-        for parameter in cli.commands["run"].params
-        if isinstance(parameter, click.Option)
-        for option in parameter.opts
-    }
-    path = tmp_path / "scenario.yaml"
-    result = CliRunner().invoke(
+    with pytest.raises(ValidationError):
+        _scenario(checkpoint_interval=value)
+
+
+@pytest.mark.regression
+def test_run_and_config_pass_checkpoint_interval(tmp_path: Path, monkeypatch):
+    """The run and config commands forward the flag and leave a file value alone.
+
+    ## WRITTEN BY AI ##
+    """
+    seen: list[BenchmarkScenario] = []
+
+    async def capture(args, **_kwargs):
+        seen.append(args)
+
+    monkeypatch.setattr(text_entry, "benchmark_generative_text", capture)
+    runner = CliRunner()
+    flagged = runner.invoke(
+        cli,
+        [
+            "run",
+            "--backend",
+            "kind=openai_http,target=http://localhost:8000",
+            "--profile",
+            "kind=synchronous",
+            "--data",
+            "kind=synthetic_text,prompt_tokens=8",
+            "--checkpoint-interval",
+            "600",
+            "--disable-console",
+        ],
+    )
+    assert flagged.exit_code == 0, flagged.output
+    assert seen[-1].checkpoint_interval == 600.0
+
+    source = tmp_path / "source.yaml"
+    source.write_text(
+        yaml.safe_dump(
+            {
+                "checkpoint_interval": 30,
+                "spec": {
+                    "backend": {
+                        "kind": "openai_http",
+                        "target": "http://localhost:8000",
+                    },
+                    "profile": {"kind": "synchronous"},
+                    "data": [{"kind": "synthetic_text", "prompt_tokens": 8}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    kept = runner.invoke(
+        cli,
+        ["run", "--config", str(source), "--disable-console"],
+    )
+    assert kept.exit_code == 0, kept.output
+    assert seen[-1].checkpoint_interval == 30.0
+
+    written = tmp_path / "written.yaml"
+    configured = runner.invoke(
         cli,
         [
             "config",
-            str(path),
+            str(written),
             "--backend",
             "kind=openai_http,target=http://localhost:8000",
             "--profile",
@@ -300,6 +416,5 @@ def test_run_checkpoint_interval_round_trips_through_config(tmp_path: Path):
             "600",
         ],
     )
-    assert result.exit_code == 0, result.output
-    loaded = BenchmarkScenario.create(scenario=path)
-    assert loaded.checkpoint_interval == 600.0
+    assert configured.exit_code == 0, configured.output
+    assert BenchmarkScenario.create(scenario=written).checkpoint_interval == 600.0

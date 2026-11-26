@@ -65,6 +65,18 @@ class GenerativeBenchmarkerSerialized(GenerativeBenchmarkerOutput):
 
         return cls(output_path=args.path, format_type=args.kind)
 
+    def output_file(self) -> Path:
+        """
+        Resolve the file this handler writes.
+
+        A directory uses ``benchmarks.<format>`` in that directory.
+
+        :return: File path for the report
+        """
+        if self.output_path.is_dir():
+            return self.output_path / f"benchmarks.{self.format_type}"
+        return self.output_path
+
     async def finalize(self, report: GenerativeBenchmarksReport) -> Path:
         """
         Serialize and save the benchmark report to the configured output path.
@@ -72,7 +84,4 @@ class GenerativeBenchmarkerSerialized(GenerativeBenchmarkerOutput):
         :param report: The generative benchmarks report to serialize
         :return: Path to the saved report file
         """
-        output_path = self.output_path
-        if output_path.is_dir():
-            output_path = output_path / f"benchmarks.{self.format_type}"
-        return report.save_file(output_path, type_=self.format_type)
+        return report.save_file(self.output_file(), type_=self.format_type)
