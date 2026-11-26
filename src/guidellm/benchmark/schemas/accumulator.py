@@ -151,6 +151,14 @@ class GenerativeBenchmarkTimings(StandardBaseModel):
         """
         return self.request_end or self.current_request or -1.0
 
+    def has_measurement_window(self) -> bool:
+        """
+        :return: Whether both measurement bounds have been observed
+        """
+        return (
+            self.finalized_measure_start != -1.0 and self.finalized_measure_end != -1.0
+        )
+
     def update_estimate(
         self,
         info: RequestInfo,

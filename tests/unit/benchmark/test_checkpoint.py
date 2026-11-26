@@ -40,6 +40,7 @@ from guidellm.schemas.benchmark.outputs import (
     JSONBenchmarkOutputArgs,
     YAMLBenchmarkOutputArgs,
 )
+from guidellm.schemas.benchmark.transient import TransientPhaseConfig
 from guidellm.settings import settings
 
 
@@ -92,6 +93,55 @@ def _completed(index: int):
 
 def _ids(benchmark: GenerativeBenchmark) -> list[str]:
     return [stats.request_id for stats in benchmark.requests.successful or []]
+
+
+def _config() -> BenchmarkConfig:
+    return BenchmarkConfig(
+        run_id="checkpoint",
+        run_index=0,
+        strategy=SynchronousStrategy(),
+        constraints={},
+        profile={},
+        requests={},
+        backend={},
+        environment={},
+        warnings=[],
+    )
+
+
+def _accumulator() -> GenerativeBenchmarkAccumulator:
+    return GenerativeBenchmarkAccumulator(config=_config())
+
+
+def _ready_pair():
+    accumulator = _accumulator()
+    response, request, info, state = _completed(0)
+    accumulator.update_estimate(response, request, info, state)
+    return accumulator, state
+
+
+class _Rig:
+    def __init__(self, clock, writer, recorded, tracker):
+        self.clock = clock
+        self.writer = writer
+        self.recorded = recorded
+        self.tracker = tracker
+
+
+@pytest.fixture
+def checkpoint_rig(monkeypatch, tmp_path: Path) -> _Rig:
+    clock = {"now": 0.0}
+    monkeypatch.setattr(checkpoint_module, "monotonic", lambda: clock["now"])
+    recorded: list[GenerativeBenchmarksReport] = []
+    writer = CheckpointReportWriter(tmp_path / "benchmarks.checkpoint.json", "json")
+
+    async def record(report: GenerativeBenchmarksReport) -> Path:
+        recorded.append(report)
+        return writer.path
+
+    monkeypatch.setattr(writer, "write", record)
+    tracker = GenerativeCheckpointBenchmarkerProgress(10.0, writer, _scenario())
+    return _Rig(clock, writer, recorded, tracker)
 
 
 @pytest.mark.sanity
@@ -196,6 +246,31 @@ def test_failed_checkpoint_write_keeps_the_previous_file(monkeypatch, tmp_path: 
 
 
 @pytest.mark.regression
+def test_checkpoint_write_cleans_temp_file_on_base_exception(monkeypatch, tmp_path):
+    """A cancelled write removes its temp file and leaves the checkpoint.
+
+    ## WRITTEN BY AI ##
+    """
+    path = tmp_path / "benchmarks.checkpoint.json"
+    path.write_text("previous", encoding="utf-8")
+    writer = CheckpointReportWriter(path, "json")
+
+    class _Cancelled(BaseException):
+        pass
+
+    def fail(self, destination, type_):
+        Path(destination).write_text("partial", encoding="utf-8")
+        raise _Cancelled
+
+    monkeypatch.setattr(GenerativeBenchmarksReport, "save_file", fail)
+    with pytest.raises(_Cancelled):
+        asyncio.run(writer.write(GenerativeBenchmarksReport(config=_scenario())))
+
+    assert path.read_text(encoding="utf-8") == "previous"
+    assert list(tmp_path.glob(".benchmarks.checkpoint.json.*.tmp")) == []
+
+
+@pytest.mark.regression
 def test_checkpoint_path_uses_serialized_output_or_the_default_dir(tmp_path: Path):
     """JSON and YAML paths gain a checkpoint suffix. Anything else uses the default.
 
@@ -241,210 +316,187 @@ def test_checkpoint_path_uses_serialized_output_or_the_default_dir(tmp_path: Pat
 
 @pytest.mark.regression
 @pytest.mark.asyncio
-async def test_checkpoint_clock_resets_when_the_next_strategy_starts(
-    monkeypatch, tmp_path: Path
-):
+async def test_checkpoint_clock_resets_when_the_next_strategy_starts(checkpoint_rig):
     """A new strategy waits out its own interval before the next checkpoint.
 
     ## WRITTEN BY AI ##
     """
-    clock = {"now": 0.0}
-    monkeypatch.setattr(checkpoint_module, "monotonic", lambda: clock["now"])
-    written: list[int] = []
-    writer = CheckpointReportWriter(tmp_path / "benchmarks.checkpoint.json", "json")
-
-    async def record(report: GenerativeBenchmarksReport) -> Path:
-        written.append(len(report.benchmarks))
-        return writer.path
-
-    monkeypatch.setattr(writer, "write", record)
-    tracker = GenerativeCheckpointBenchmarkerProgress(10.0, writer, _scenario())
-    config = BenchmarkConfig(
-        run_id="checkpoint",
-        run_index=0,
-        strategy=SynchronousStrategy(),
-        constraints={},
-        profile={},
-        requests={},
-        backend={},
-        environment={},
-        warnings=[],
-    )
-    accumulator = GenerativeBenchmarkAccumulator(config=config)
-    response, request, info, state = _completed(0)
-    accumulator.update_estimate(response, request, info, state)
+    accumulator, state = _ready_pair()
     finished = GenerativeBenchmark.compile(
         accumulator=accumulator, scheduler_state=state
     )
+    rig = checkpoint_rig
+    await rig.tracker.on_benchmark_start(SynchronousStrategy())
+    rig.clock["now"] = 10.0
+    await rig.tracker.on_benchmark_update(accumulator, state)
+    await rig.tracker.on_benchmark_complete(finished)
+    rig.clock["now"] = 100.0
+    await rig.tracker.on_benchmark_start(SynchronousStrategy())
+    rig.clock["now"] = 105.0
+    await rig.tracker.on_benchmark_update(accumulator, state)
 
-    await tracker.on_benchmark_start(SynchronousStrategy())
-    clock["now"] = 10.0
-    await tracker.on_benchmark_update(accumulator, state)
-    await tracker.on_benchmark_complete(finished)
-    clock["now"] = 100.0
-    await tracker.on_benchmark_start(SynchronousStrategy())
-    clock["now"] = 105.0
-    await tracker.on_benchmark_update(accumulator, state)
-
-    assert written == [1]
+    assert [len(report.benchmarks) for report in rig.recorded] == [1]
 
 
 @pytest.mark.regression
 @pytest.mark.asyncio
-async def test_missing_measurement_window_is_logged_at_debug(
-    monkeypatch, tmp_path: Path
-):
+async def test_missing_measurement_window_is_logged_at_debug(checkpoint_rig):
     """A compile with no measurement window is logged and does not write.
 
     ## WRITTEN BY AI ##
     """
-    clock = {"now": 0.0}
-    monkeypatch.setattr(checkpoint_module, "monotonic", lambda: clock["now"])
     records: list[str] = []
     sink = logger.add(lambda message: records.append(str(message)), level="DEBUG")
-    writer = CheckpointReportWriter(tmp_path / "benchmarks.checkpoint.json", "json")
-    called = {"write": False}
-
-    async def record(_report):
-        called["write"] = True
-        return writer.path
-
-    monkeypatch.setattr(writer, "write", record)
-    tracker = GenerativeCheckpointBenchmarkerProgress(15.0, writer, _scenario())
-    accumulator = GenerativeBenchmarkAccumulator(
-        config=BenchmarkConfig(
-            run_id="checkpoint",
-            run_index=0,
-            strategy=SynchronousStrategy(),
-            constraints={},
-            profile={},
-            requests={},
-            backend={},
-            environment={},
-            warnings=[],
-        )
-    )
+    rig = checkpoint_rig
+    rig.tracker.interval = 15.0
+    accumulator = _accumulator()
     try:
-        await tracker.on_benchmark_start(SynchronousStrategy())
+        await rig.tracker.on_benchmark_start(SynchronousStrategy())
         for moment in (20.0, 21.0, 40.0):
-            clock["now"] = moment
-            await tracker.on_benchmark_update(accumulator, SchedulerState())
+            rig.clock["now"] = moment
+            await rig.tracker.on_benchmark_update(accumulator, SchedulerState())
     finally:
         logger.remove(sink)
 
-    assert called["write"] is False
+    assert rig.recorded == []
     skips = [record for record in records if "no measurement window yet" in record]
     assert len(skips) == 2
-
-
-def _ready_pair():
-    config = BenchmarkConfig(
-        run_id="checkpoint",
-        run_index=0,
-        strategy=SynchronousStrategy(),
-        constraints={},
-        profile={},
-        requests={},
-        backend={},
-        environment={},
-        warnings=[],
-    )
-    accumulator = GenerativeBenchmarkAccumulator(config=config)
-    response, request, info, state = _completed(0)
-    accumulator.update_estimate(response, request, info, state)
-    return accumulator, state
 
 
 @pytest.mark.regression
 @pytest.mark.asyncio
 async def test_failing_writer_is_attempted_once_per_interval(
-    monkeypatch, tmp_path: Path
+    checkpoint_rig, monkeypatch
 ):
     """An unwritable checkpoint is tried once per interval, not on every update.
 
     ## WRITTEN BY AI ##
     """
-    clock = {"now": 0.0}
-    monkeypatch.setattr(checkpoint_module, "monotonic", lambda: clock["now"])
     attempts = {"n": 0}
-    writer = CheckpointReportWriter(tmp_path / "benchmarks.checkpoint.json", "json")
+    rig = checkpoint_rig
 
     async def fail(_report: GenerativeBenchmarksReport) -> Path:
         attempts["n"] += 1
         raise OSError("unwritable")
 
-    monkeypatch.setattr(writer, "write", fail)
-    tracker = GenerativeCheckpointBenchmarkerProgress(10.0, writer, _scenario())
+    monkeypatch.setattr(rig.writer, "write", fail)
     accumulator, state = _ready_pair()
-    await tracker.on_benchmark_start(SynchronousStrategy())
+    await rig.tracker.on_benchmark_start(SynchronousStrategy())
     for moment in (10.0, 11.0, 12.0, 20.0, 21.0, 30.0):
-        clock["now"] = moment
-        await tracker.on_benchmark_update(accumulator, state)
+        rig.clock["now"] = moment
+        await rig.tracker.on_benchmark_update(accumulator, state)
 
     assert attempts["n"] == 3
 
 
 @pytest.mark.regression
 @pytest.mark.asyncio
-async def test_one_checkpoint_write_per_interval(monkeypatch, tmp_path: Path):
+async def test_one_checkpoint_write_per_interval(checkpoint_rig):
     """Three elapsed intervals produce three writes, not one per update.
 
     ## WRITTEN BY AI ##
     """
-    clock = {"now": 0.0}
-    monkeypatch.setattr(checkpoint_module, "monotonic", lambda: clock["now"])
-    writes = {"n": 0}
-    writer = CheckpointReportWriter(tmp_path / "benchmarks.checkpoint.json", "json")
-
-    async def record(_report: GenerativeBenchmarksReport) -> Path:
-        writes["n"] += 1
-        return writer.path
-
-    monkeypatch.setattr(writer, "write", record)
-    tracker = GenerativeCheckpointBenchmarkerProgress(10.0, writer, _scenario())
+    rig = checkpoint_rig
     accumulator, state = _ready_pair()
-    await tracker.on_benchmark_start(SynchronousStrategy())
+    await rig.tracker.on_benchmark_start(SynchronousStrategy())
     for moment in (10.0, 15.0, 20.0, 25.0, 30.0):
-        clock["now"] = moment
-        await tracker.on_benchmark_update(accumulator, state)
+        rig.clock["now"] = moment
+        await rig.tracker.on_benchmark_update(accumulator, state)
 
-    assert writes["n"] == 3
+    assert len(rig.recorded) == 3
 
 
 @pytest.mark.regression
 @pytest.mark.asyncio
-async def test_initialize_forgets_finished_strategies(monkeypatch, tmp_path: Path):
+async def test_initialize_forgets_finished_strategies(checkpoint_rig):
     """A new run does not keep strategies finished by the previous run.
 
     ## WRITTEN BY AI ##
     """
-    clock = {"now": 0.0}
-    monkeypatch.setattr(checkpoint_module, "monotonic", lambda: clock["now"])
-    sizes: list[int] = []
-    writer = CheckpointReportWriter(tmp_path / "benchmarks.checkpoint.json", "json")
-
-    async def record(report: GenerativeBenchmarksReport) -> Path:
-        sizes.append(len(report.benchmarks))
-        return writer.path
-
-    monkeypatch.setattr(writer, "write", record)
-    tracker = GenerativeCheckpointBenchmarkerProgress(10.0, writer, _scenario())
+    rig = checkpoint_rig
     accumulator, state = _ready_pair()
     finished = GenerativeBenchmark.compile(
         accumulator=accumulator, scheduler_state=state
     )
-    await tracker.on_initialize(Mock())
-    await tracker.on_benchmark_start(SynchronousStrategy())
-    clock["now"] = 10.0
-    await tracker.on_benchmark_update(accumulator, state)
-    await tracker.on_benchmark_complete(finished)
-    await tracker.on_initialize(Mock())
-    clock["now"] = 100.0
-    await tracker.on_benchmark_start(SynchronousStrategy())
-    clock["now"] = 110.0
-    await tracker.on_benchmark_update(accumulator, state)
+    await rig.tracker.on_initialize(Mock())
+    await rig.tracker.on_benchmark_start(SynchronousStrategy())
+    rig.clock["now"] = 10.0
+    await rig.tracker.on_benchmark_update(accumulator, state)
+    await rig.tracker.on_benchmark_complete(finished)
+    await rig.tracker.on_initialize(Mock())
+    rig.clock["now"] = 100.0
+    await rig.tracker.on_benchmark_start(SynchronousStrategy())
+    rig.clock["now"] = 110.0
+    await rig.tracker.on_benchmark_update(accumulator, state)
 
-    assert sizes == [1, 1]
+    assert [len(report.benchmarks) for report in rig.recorded] == [1, 1]
+
+
+@pytest.mark.regression
+@pytest.mark.asyncio
+async def test_compile_error_is_logged_once_per_interval(checkpoint_rig, monkeypatch):
+    """A real compile failure reaches the benchmarker error log once per interval.
+
+    ## WRITTEN BY AI ##
+    """
+    calls = {"n": 0}
+    rig = checkpoint_rig
+
+    def boom(accumulator, scheduler_state):
+        del accumulator, scheduler_state
+        calls["n"] += 1
+        raise RuntimeError("compile broke")
+
+    monkeypatch.setattr(GenerativeBenchmark, "compile", boom)
+    monkeypatch.setattr(
+        benchmarker_module.InfoMixin, "extract_from_obj", lambda _obj: {}
+    )
+    monkeypatch.setattr(benchmarker_module, "prefetch_requests", lambda *_a, **_k: [])
+
+    async def schedule(**_kwargs):
+        for moment in (10.0, 11.0, 20.0):
+            rig.clock["now"] = moment
+            yield _completed(0)
+
+    monkeypatch.setattr(
+        benchmarker_module, "Scheduler", Mock(return_value=Mock(run=schedule))
+    )
+    records: list[str] = []
+    sink = logger.add(lambda message: records.append(str(message)), level="ERROR")
+    strategy = SynchronousStrategy()
+
+    def strategies():
+        yield strategy, {}
+
+    profile = Mock(completed_strategies=[])
+    profile.strategies_generator.side_effect = strategies
+    try:
+        with pytest.raises(RuntimeError, match="compile broke"):
+            async for _benchmark in benchmarker_module.Benchmarker().run(
+                accumulator_class=GenerativeBenchmarkAccumulator,
+                benchmark_class=GenerativeBenchmark,
+                requests=[],
+                backend=Mock(),
+                profile=profile,
+                environment=Mock(),
+                warmup=TransientPhaseConfig(),
+                cooldown=TransientPhaseConfig(),
+                progress=rig.tracker,
+                warnings=[],
+            ):
+                pass
+    finally:
+        logger.remove(sink)
+
+    errors = [
+        record
+        for record in records
+        if "Error updating benchmark estimate/progress" in record
+        and "compile broke" in record
+    ]
+    assert errors
+    assert len(errors) == 2
+    assert calls["n"] == 3
 
 
 @pytest.mark.regression
@@ -461,9 +513,9 @@ def test_unset_interval_is_omitted_from_the_report():
 
 
 @pytest.mark.regression
-@pytest.mark.parametrize("value", [0, -1])
-def test_checkpoint_interval_rejects_non_positive(value: int):
-    """Zero and negative intervals are rejected by the scenario field.
+@pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan")])
+def test_checkpoint_interval_rejects_non_positive(value: float):
+    """Zero, negative, infinite, and NaN intervals are rejected.
 
     ## WRITTEN BY AI ##
     """

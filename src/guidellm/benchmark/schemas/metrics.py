@@ -1370,14 +1370,14 @@ class GenerativeMetrics(StandardBaseDict):
         :return: Compiled generative metrics with all distributions and summaries
         :raises ValueError: If measure_start and measure_end/request_end are not set
         """
-        start_time = accumulator.timings.finalized_measure_start
-        end_time = accumulator.timings.finalized_measure_end
-
-        if start_time == -1.0 or end_time == -1.0:
+        if not accumulator.timings.has_measurement_window():
             raise ValueError(
                 "Cannot compile GenerativeMetrics: "
                 "No measurement start or end times available."
             )
+
+        start_time = accumulator.timings.finalized_measure_start
+        end_time = accumulator.timings.finalized_measure_end
 
         successful = accumulator.completed.get_within_range(start_time, end_time)
         incomplete = accumulator.incomplete.get_within_range(start_time, end_time)
